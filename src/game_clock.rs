@@ -35,6 +35,18 @@ impl GameClock {
         self.minute_of_day
     }
 
+    pub(crate) fn restore(&mut self, day: u64, minute_of_day: f64) -> bool {
+        if day == 0
+            || !minute_of_day.is_finite()
+            || !(0.0..MINUTES_PER_GAME_DAY).contains(&minute_of_day)
+        {
+            return false;
+        }
+        self.day = day;
+        self.minute_of_day = minute_of_day;
+        true
+    }
+
     /// Advance by real seconds and return one notification for every day crossed.
     pub fn advance_real_seconds(&mut self, seconds: f64) -> Vec<DayTransition> {
         if !seconds.is_finite() || seconds <= 0.0 {

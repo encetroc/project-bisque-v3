@@ -175,7 +175,7 @@ fn handle_upgrade_requests(
     }
 }
 
-fn bakery_slot_positions() -> [Vec3; 8] {
+pub(crate) fn bakery_slot_positions() -> [Vec3; 8] {
     [
         Vec3::new(-0.70, 0.12, 0.62),
         Vec3::new(0.00, 0.12, 0.62),

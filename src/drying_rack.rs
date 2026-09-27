@@ -30,6 +30,16 @@ pub struct DryingJob {
     started_at: f64,
 }
 
+impl DryingJob {
+    pub(crate) const fn new(object: CeramicObjectId, started_at: f64) -> Self {
+        Self { object, started_at }
+    }
+
+    pub(crate) const fn started_at(self) -> f64 {
+        self.started_at
+    }
+}
+
 /// Contents of the base drying rack. Completed items remain in their slots until collected.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Default)]
 pub struct DryingRack {
@@ -52,6 +62,15 @@ impl DryingRack {
         } else {
             DRYING_RACK_CAPACITY
         }
+    }
+
+    pub(crate) fn restore(
+        &mut self,
+        slots: [Option<DryingJob>; DRYING_RACK_MAX_CAPACITY],
+        upgraded: bool,
+    ) {
+        self.slots = slots;
+        self.upgraded = upgraded;
     }
 }
 

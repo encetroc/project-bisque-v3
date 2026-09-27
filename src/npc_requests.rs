@@ -54,7 +54,7 @@ pub const BAKER_TWO_CUPS: NpcRequestDefinition = NpcRequestDefinition {
 };
 
 /// Lifecycle for an NPC's current request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum NpcRequestState {
     Available,
     Active,

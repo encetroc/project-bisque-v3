@@ -38,7 +38,9 @@ pub const fn daily_output(character: NpcCharacter) -> u32 {
 }
 
 /// Meaningful world consequence that may occupy an authored property slot once.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum NpcPropertyEvent {
     CarpenterAddsBench,
 }
@@ -50,6 +52,10 @@ pub struct AppliedNpcPropertyEvents(BTreeSet<NpcPropertyEvent>);
 impl AppliedNpcPropertyEvents {
     pub fn contains(&self, event: NpcPropertyEvent) -> bool {
         self.0.contains(&event)
+    }
+
+    pub(crate) fn restore(&mut self, events: impl IntoIterator<Item = NpcPropertyEvent>) {
+        self.0 = events.into_iter().collect();
     }
 }
 

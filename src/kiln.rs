@@ -31,6 +31,16 @@ pub struct FiringJob {
     started_at: f64,
 }
 
+impl FiringJob {
+    pub(crate) const fn new(object: CeramicObjectId, started_at: f64) -> Self {
+        Self { object, started_at }
+    }
+
+    pub(crate) const fn started_at(self) -> f64 {
+        self.started_at
+    }
+}
+
 /// Contents of the base kiln. Completed items remain in their slots until collected.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Default)]
 pub struct Kiln {
@@ -53,6 +63,15 @@ impl Kiln {
         } else {
             KILN_CAPACITY
         }
+    }
+
+    pub(crate) fn restore(
+        &mut self,
+        slots: [Option<FiringJob>; KILN_MAX_CAPACITY],
+        upgraded: bool,
+    ) {
+        self.slots = slots;
+        self.upgraded = upgraded;
     }
 }
 

@@ -3,7 +3,7 @@
 use crate::{inventory::CeramicObjectId, planet::ResourceType};
 
 /// The three ceramic forms supported by the prototype.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum CeramicForm {
     Cup,
     Bowl,
@@ -15,7 +15,7 @@ impl CeramicForm {
 }
 
 /// Clay varieties associated with the planet's resource nodes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ClayMaterial {
     Common,
     Red,
@@ -35,7 +35,7 @@ impl ClayMaterial {
 }
 
 /// Glaze applied to a ceramic before it is fired.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Glaze {
     None,
     Blue,
@@ -48,7 +48,7 @@ impl Glaze {
 }
 
 /// Processing stage of a unique ceramic object.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ProcessingState {
     Greenware,
     Dry,
@@ -73,7 +73,7 @@ pub struct InvalidStageTransition {
 }
 
 /// The recipe-defined properties of a ceramic, before assigning a unique identity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CeramicItemTemplate {
     pub form: CeramicForm,
     pub clay: ClayMaterial,
@@ -88,7 +88,7 @@ impl CeramicItemTemplate {
 }
 
 /// One uniquely identified ceramic, retaining all of its defining properties.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CeramicItem {
     pub id: CeramicObjectId,
     pub template: CeramicItemTemplate,

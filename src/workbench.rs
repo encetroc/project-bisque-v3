@@ -53,6 +53,17 @@ pub struct CraftedCeramics {
     pub items: Vec<CeramicItem>,
 }
 
+impl CraftedCeramics {
+    pub(crate) fn restore(&mut self, items: Vec<CeramicItem>, next_id: u64) {
+        self.items = items;
+        self.next_id = next_id.max(self.items.iter().map(|item| item.id.0).max().unwrap_or(0));
+    }
+
+    pub(crate) fn next_id(&self) -> u64 {
+        self.next_id
+    }
+}
+
 #[derive(Resource, Debug, Default)]
 struct WorkbenchFeedback(Option<String>);
 

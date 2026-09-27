@@ -58,7 +58,7 @@ pub fn project_face_to_sphere(face: PlanetFace, u: f32, v: f32, radius: f32) -> 
 }
 
 /// One of the six faces of the cube used to define the planet's surface grid.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum PlanetFace {
     PositiveX,
     NegativeX,
@@ -94,7 +94,7 @@ pub enum FaceOrientation {
 }
 
 /// A validated tile address on one cube face.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TileCoordinate {
     face: PlanetFace,
     x: u8,
@@ -286,7 +286,7 @@ pub enum Biome {
 }
 
 /// Resource category that may be present on a tile.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ResourceType {
     CommonClay,
     RedClay,

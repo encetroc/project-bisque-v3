@@ -36,8 +36,8 @@ pub struct RedClayDiscovery {
     pub discovered: bool,
 }
 
-#[derive(Component)]
-struct GatheredRedClay;
+#[derive(Component, Debug, Clone, Copy)]
+pub struct GatheredRedClay;
 
 /// Install deterministic resource-node placement and primitive visuals.
 pub struct ResourceNodePlugin;

@@ -17,7 +17,9 @@ use crate::{
 };
 
 /// The three named people who inhabit the starter world.
-#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(
+    Component, Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum NpcCharacter {
     Baker,
     Carpenter,
@@ -25,7 +27,9 @@ pub enum NpcCharacter {
 }
 
 /// A named NPC destination/property in the world.
-#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(
+    Component, Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum NpcProperty {
     Bakery,
     Workshop,

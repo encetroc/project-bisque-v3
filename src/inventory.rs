@@ -9,11 +9,11 @@ pub const RESOURCE_STACK_LIMIT: u32 = 99;
 
 /// Stable identity for one ceramic object. Ceramic item details are defined by
 /// the crafting model; the inventory only needs to distinguish each object.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct CeramicObjectId(pub u64);
 
 /// Contents of one inventory slot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum InventorySlot {
     Empty,
     ResourceStack { resource: ResourceType, count: u32 },
@@ -46,6 +46,10 @@ impl Inventory {
 
     pub fn slots(&self) -> &[InventorySlot; INVENTORY_SLOT_COUNT] {
         &self.slots
+    }
+
+    pub(crate) fn restore_slots(&mut self, slots: [InventorySlot; INVENTORY_SLOT_COUNT]) {
+        self.slots = slots;
     }
 
     /// Total quantity of a resource across all of its stacks.
