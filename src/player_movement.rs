@@ -33,8 +33,7 @@ impl SurfacePlayer {
     }
 }
 
-/// Installs keyboard-driven surface movement. Controls are deliberately not
-/// camera-relative: WASD is interpreted in the player's tangent frame.
+/// Installs keyboard-driven movement relative to the active surface camera.
 pub struct PlayerMovementPlugin;
 
 impl Plugin for PlayerMovementPlugin {
@@ -46,6 +45,7 @@ impl Plugin for PlayerMovementPlugin {
 fn move_surface_players(
     keyboard: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
+    cameras: Query<&GlobalTransform, With<Camera3d>>,
     mut players: Query<(&mut SurfacePlayer, &mut Transform)>,
 ) {
     let mut input = Vec2::ZERO;
@@ -59,17 +59,30 @@ fn move_surface_players(
     let running = keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
     let speed = if running { RUN_SPEED } else { WALK_SPEED };
     let distance = speed * time.delta_secs();
+    let camera_basis = cameras.single().ok().map(|camera| {
+        let rotation = camera.compute_transform().rotation;
+        (rotation * -Vec3::Z, rotation * Vec3::X)
+    });
 
     for (mut player, mut transform) in &mut players {
         let normal = player.location.direction.try_normalize().unwrap_or(Vec3::Y);
-        let forward = (player.heading - normal * player.heading.dot(normal))
+        let fallback_forward = (player.heading - normal * player.heading.dot(normal))
             .try_normalize()
             .unwrap_or_else(|| tangent_from_normal(normal));
-        let right = forward.cross(normal).normalize();
-        let tangent = right * input.x + forward * input.y;
+        let (camera_forward, camera_right) =
+            camera_basis.unwrap_or((fallback_forward, fallback_forward.cross(normal)));
+        let Some(tangent) = camera_relative_tangent(
+            normal,
+            camera_forward,
+            camera_right,
+            fallback_forward,
+            input,
+        ) else {
+            continue;
+        };
         let Some((direction, heading)) = advance_on_sphere(
             normal,
-            forward,
+            fallback_forward,
             tangent,
             distance.min(speed * 0.1),
             player.planet_radius + player.terrain_height,
@@ -93,6 +106,39 @@ fn move_surface_players(
             *transform = updated;
         }
     }
+}
+
+/// Map screen-relative input onto the local tangent plane. If the camera points
+/// directly along the surface normal, its projected right vector supplies a
+/// stable forward direction; invalid or degenerate camera vectors use the
+/// player's transported heading instead.
+fn camera_relative_tangent(
+    normal: Vec3,
+    camera_forward: Vec3,
+    camera_right: Vec3,
+    fallback_forward: Vec3,
+    input: Vec2,
+) -> Option<Vec3> {
+    if !normal.is_finite()
+        || !camera_forward.is_finite()
+        || !camera_right.is_finite()
+        || !fallback_forward.is_finite()
+        || !input.is_finite()
+    {
+        return None;
+    }
+    let normal = normal.try_normalize()?;
+    let fallback_forward = (fallback_forward - normal * fallback_forward.dot(normal))
+        .try_normalize()
+        .unwrap_or_else(|| tangent_from_normal(normal));
+    let projected_right = (camera_right - normal * camera_right.dot(normal)).try_normalize();
+    let forward = (camera_forward - normal * camera_forward.dot(normal))
+        .try_normalize()
+        .or_else(|| projected_right.map(|right| normal.cross(right)))
+        .unwrap_or(fallback_forward);
+    let right = forward.cross(normal).try_normalize()?;
+    let tangent = right * input.x + forward * input.y;
+    tangent.is_finite().then_some(tangent)
 }
 
 /// Advance a radial location along a great circle and parallel-transport its
@@ -144,6 +190,55 @@ pub const PLAYER_PLANET_RADIUS: f32 = DEFAULT_PLANET_RADIUS;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn camera_relative_mapping_tracks_yaw_across_surface_normals() {
+        for normal in [
+            Vec3::Y,
+            Vec3::new(0.2, 0.96, 0.1).normalize(),
+            Vec3::new(0.7, -0.3, 0.64).normalize(),
+            Vec3::new(0.001, 1.0, 0.0).normalize(),
+            Vec3::X,
+        ] {
+            let heading = tangent_from_normal(normal);
+            let surface_rotation = Quat::from_rotation_arc(Vec3::Y, normal);
+            for yaw in [0.0, 0.7, 1.8, 4.2] {
+                let camera_rotation = surface_rotation * Quat::from_rotation_y(yaw);
+                let camera_forward = camera_rotation * -Vec3::Z;
+                let camera_right = camera_rotation * Vec3::X;
+                let forward =
+                    camera_relative_tangent(normal, camera_forward, camera_right, heading, Vec2::Y)
+                        .unwrap()
+                        .normalize();
+                let right =
+                    camera_relative_tangent(normal, camera_forward, camera_right, heading, Vec2::X)
+                        .unwrap()
+                        .normalize();
+                let expected_forward =
+                    (camera_forward - normal * camera_forward.dot(normal)).normalize();
+                let expected_right = (camera_right - normal * camera_right.dot(normal)).normalize();
+                assert!(forward.dot(expected_forward) > 0.9999);
+                assert!(right.dot(expected_right) > 0.9999);
+                assert!(forward.dot(normal).abs() < 1e-5);
+                assert!(right.dot(normal).abs() < 1e-5);
+            }
+        }
+    }
+
+    #[test]
+    fn degenerate_camera_projection_falls_back_without_nan() {
+        let normal = Vec3::Y;
+        let fallback = Vec3::X;
+        let from_vertical_camera =
+            camera_relative_tangent(normal, normal, Vec3::X, fallback, Vec2::Y).unwrap();
+        assert!(from_vertical_camera.is_finite());
+        assert!(from_vertical_camera.normalize().dot(Vec3::NEG_Z) > 0.9999);
+
+        let from_degenerate_camera =
+            camera_relative_tangent(normal, normal, normal, fallback, Vec2::Y).unwrap();
+        assert!(from_degenerate_camera.is_finite());
+        assert!(from_degenerate_camera.normalize().dot(fallback) > 0.9999);
+    }
 
     #[test]
     fn movement_crosses_every_cube_face_seam_without_flipping() {
