@@ -124,6 +124,29 @@ impl TileCoordinate {
     }
 }
 
+/// A cardinal step in the current face's local tile grid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Direction {
+    North,
+    East,
+    South,
+    West,
+}
+
+impl Direction {
+    const ALL: [Self; 4] = [Self::North, Self::East, Self::South, Self::West];
+
+    fn vector(self, face: PlanetFace) -> Vec3 {
+        let (u, v) = face_basis(face);
+        match self {
+            Self::North => v,
+            Self::East => u,
+            Self::South => -v,
+            Self::West => -u,
+        }
+    }
+}
+
 /// A tile address and its surface-relative facing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PlanetCoordinate {
@@ -134,6 +157,122 @@ pub struct PlanetCoordinate {
 impl PlanetCoordinate {
     pub const fn new(tile: TileCoordinate, orientation: FaceOrientation) -> Self {
         Self { tile, orientation }
+    }
+}
+
+/// Move one tile in the current face's local cardinal direction, crossing cube
+/// edges without exposing face-pair logic to gameplay callers.
+pub fn move_coordinate(coordinate: PlanetCoordinate, direction: Direction) -> PlanetCoordinate {
+    let tile = coordinate.tile;
+    let last = TILES_PER_FACE - 1;
+    let is_edge = match direction {
+        Direction::North => tile.y == last,
+        Direction::East => tile.x == last,
+        Direction::South => tile.y == 0,
+        Direction::West => tile.x == 0,
+    };
+
+    if !is_edge {
+        let (x, y) = match direction {
+            Direction::North => (tile.x, tile.y + 1),
+            Direction::East => (tile.x + 1, tile.y),
+            Direction::South => (tile.x, tile.y - 1),
+            Direction::West => (tile.x - 1, tile.y),
+        };
+        return PlanetCoordinate::new(TileCoordinate { x, y, ..tile }, coordinate.orientation);
+    }
+
+    let source_normal = face_normal(tile.face);
+    let source_u = face_basis(tile.face).0;
+    let source_v = face_basis(tile.face).1;
+    let target_normal = direction.vector(tile.face);
+    let target_face = PlanetFace::ALL
+        .into_iter()
+        .find(|face| face_normal(*face) == target_normal)
+        .expect("each face tangent is another cube face normal");
+    let (target_u, target_v) = face_basis(target_face);
+
+    // The shared edge's axis is the source face's other local axis.
+    let edge_axis = match direction {
+        Direction::East | Direction::West => source_v,
+        Direction::North | Direction::South => source_u,
+    };
+    let turn = if edge_axis.cross(source_normal).dot(target_normal) > 0.0 {
+        1.0
+    } else {
+        -1.0
+    };
+    let rotate = |vector: Vec3| edge_axis * edge_axis.dot(vector) + turn * edge_axis.cross(vector);
+
+    // Carry the source cell's center across the edge, then express it in the
+    // destination face's local basis. The crossing axis is one tile inside.
+    let u = (tile.x as f32 + 0.5) / TILES_PER_FACE as f32 * 2.0 - 1.0;
+    let v = (tile.y as f32 + 0.5) / TILES_PER_FACE as f32 * 2.0 - 1.0;
+    let transverse = match direction {
+        Direction::East | Direction::West => source_v * v,
+        Direction::North | Direction::South => source_u * u,
+    };
+    let edge_point = source_normal * (1.0 - 1.0 / TILES_PER_FACE as f32) + transverse;
+    let mapped_u = edge_point.dot(target_u);
+    let mapped_v = edge_point.dot(target_v);
+    let x = grid_index(mapped_u);
+    let y = grid_index(mapped_v);
+    let next_tile = TileCoordinate {
+        face: target_face,
+        x,
+        y,
+    };
+
+    let heading = orientation_direction(coordinate.orientation).vector(tile.face);
+    let moved_heading = rotate(heading);
+    let next_orientation = direction_for_vector(moved_heading, target_u, target_v);
+    PlanetCoordinate::new(next_tile, next_orientation)
+}
+
+fn grid_index(value: f32) -> u8 {
+    (((value + 1.0) * 0.5 * TILES_PER_FACE as f32).floor() as i32)
+        .clamp(0, TILES_PER_FACE as i32 - 1) as u8
+}
+
+fn orientation_direction(orientation: FaceOrientation) -> Direction {
+    match orientation {
+        FaceOrientation::North => Direction::North,
+        FaceOrientation::East => Direction::East,
+        FaceOrientation::South => Direction::South,
+        FaceOrientation::West => Direction::West,
+    }
+}
+
+fn direction_for_vector(vector: Vec3, u: Vec3, v: Vec3) -> FaceOrientation {
+    let (du, dv) = (vector.dot(u), vector.dot(v));
+    match (du > 0.5, du < -0.5, dv > 0.5, dv < -0.5) {
+        (_, _, true, _) => FaceOrientation::North,
+        (true, _, _, _) => FaceOrientation::East,
+        (_, _, _, true) => FaceOrientation::South,
+        (_, true, _, _) => FaceOrientation::West,
+        _ => unreachable!("quarter-turn keeps a cardinal heading cardinal"),
+    }
+}
+
+fn face_normal(face: PlanetFace) -> Vec3 {
+    match face {
+        PlanetFace::PositiveX => Vec3::X,
+        PlanetFace::NegativeX => Vec3::NEG_X,
+        PlanetFace::PositiveY => Vec3::Y,
+        PlanetFace::NegativeY => Vec3::NEG_Y,
+        PlanetFace::PositiveZ => Vec3::Z,
+        PlanetFace::NegativeZ => Vec3::NEG_Z,
+    }
+}
+
+fn face_basis(face: PlanetFace) -> (Vec3, Vec3) {
+    match face {
+        PlanetFace::PositiveX => (Vec3::NEG_Z, Vec3::Y),
+        PlanetFace::NegativeX => (Vec3::Z, Vec3::Y),
+        PlanetFace::PositiveY => (Vec3::X, Vec3::NEG_Z),
+        PlanetFace::NegativeY => (Vec3::X, Vec3::Z),
+        PlanetFace::PositiveZ => (Vec3::X, Vec3::Y),
+        PlanetFace::NegativeZ => (Vec3::NEG_X, Vec3::Y),
     }
 }
 
@@ -389,6 +528,51 @@ mod tests {
         assert!(sample_tile_surface(&tile, f32::INFINITY).is_none());
         assert!(tile.set_height(-0.5));
         assert!(sample_tile_surface(&tile, 0.25).is_none());
+    }
+
+    #[test]
+    fn every_face_edge_transition_is_valid_and_reversible() {
+        for face in PlanetFace::ALL {
+            for direction in Direction::ALL {
+                for offset in 0..TILES_PER_FACE {
+                    let (x, y) = match direction {
+                        Direction::North => (offset, TILES_PER_FACE - 1),
+                        Direction::East => (TILES_PER_FACE - 1, offset),
+                        Direction::South => (offset, 0),
+                        Direction::West => (0, offset),
+                    };
+                    let start = PlanetCoordinate::new(
+                        TileCoordinate::new(face, x, y).unwrap(),
+                        FaceOrientation::East,
+                    );
+                    let moved = move_coordinate(start, direction);
+                    assert_ne!(moved.tile.face(), face);
+                    assert!(moved.tile.x() < TILES_PER_FACE);
+                    assert!(moved.tile.y() < TILES_PER_FACE);
+
+                    let reverse = Direction::ALL
+                        .into_iter()
+                        .map(|candidate| move_coordinate(moved, candidate))
+                        .find(|candidate| candidate.tile == start.tile)
+                        .expect("the adjoining face must provide a reverse edge step");
+                    assert_eq!(reverse, start, "{face:?} {direction:?} at {offset}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn movement_inside_face_preserves_orientation_and_changes_one_axis() {
+        let start = PlanetCoordinate::new(
+            TileCoordinate::new(PlanetFace::PositiveZ, 10, 10).unwrap(),
+            FaceOrientation::West,
+        );
+        assert_eq!(move_coordinate(start, Direction::East).tile.x(), 11);
+        assert_eq!(move_coordinate(start, Direction::North).tile.y(), 11);
+        assert_eq!(
+            move_coordinate(start, Direction::East).orientation,
+            start.orientation
+        );
     }
 
     #[test]
