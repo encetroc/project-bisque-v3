@@ -111,13 +111,12 @@ fn follow_surface_player(
     pivot_transform.rotation = player_transform.rotation * Quat::from_rotation_y(target.yaw);
 
     let wheel_delta: f32 = wheel.read().map(|event| event.y).sum();
-    if wheel_delta != 0.0 {
-        if let Ok(mut camera_transform) = cameras.single_mut() {
-            let distance = camera_transform.translation.length();
-            let zoomed = zoom_distance(distance, wheel_delta);
-            camera_transform.translation =
-                camera_transform.translation.normalize_or_zero() * zoomed;
-        }
+    if wheel_delta != 0.0
+        && let Ok(mut camera_transform) = cameras.single_mut()
+    {
+        let distance = camera_transform.translation.length();
+        let zoomed = zoom_distance(distance, wheel_delta);
+        camera_transform.translation = camera_transform.translation.normalize_or_zero() * zoomed;
     }
 }
 
