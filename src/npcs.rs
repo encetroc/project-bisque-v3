@@ -3,14 +3,17 @@
 use bevy::prelude::*;
 
 use crate::{
+    ceramics::{CeramicForm, CeramicItem, ProcessingState},
     economy::Merchant,
     game_clock::GameClock,
-    interaction::Interactable,
+    interaction::{Interactable, InteractionRequested},
+    inventory::{CeramicObjectId, Inventory},
     planet::{
         DEFAULT_PLANET_RADIUS, FaceOrientation, PlanetCoordinate, PlanetFace, PlanetTile,
         TileCoordinate, sample_tile_surface,
     },
     surface_transform::{SurfaceLocation, surface_transform},
+    workbench::CraftedCeramics,
 };
 
 /// The three named people who inhabit the starter world.
@@ -27,6 +30,51 @@ pub enum NpcProperty {
     Bakery,
     Workshop,
     GeneralStore,
+}
+
+/// Friendship is bounded to the prototype's single 0–100 relationship value.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NpcFriendship(pub u8);
+
+impl NpcFriendship {
+    pub fn increase(&mut self, amount: u8) {
+        self.0 = self.0.saturating_add(amount).min(100);
+    }
+}
+
+/// Authored category used to select an NPC's contextual dialogue pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NpcDialogueKind {
+    Generic,
+    Request,
+    Relationship,
+}
+
+/// The currently displayed authored NPC line, if any.
+#[derive(Resource, Debug, Clone, PartialEq, Eq, Default)]
+pub struct NpcDialogueDisplay(pub Option<NpcDialogueLine>);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NpcDialogueLine {
+    pub speaker: NpcCharacter,
+    pub kind: NpcDialogueKind,
+    pub text: &'static str,
+}
+
+/// A request from a gameplay/UI caller to gift one owned ceramic to an NPC.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NpcGiftRequested {
+    pub npc: Entity,
+    pub item: CeramicObjectId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GiftResult {
+    Liked,
+    NotLiked,
+    NotOwned,
+    UnknownCeramic,
+    NotFired,
 }
 
 /// A deterministic phase in an NPC's authored daily routine.
@@ -59,8 +107,22 @@ pub struct NpcPlugin;
 
 impl Plugin for NpcPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_npc_world)
-            .add_systems(Update, update_npc_schedules);
+        app.init_resource::<NpcDialogueDisplay>()
+            .init_resource::<Inventory>()
+            .init_resource::<CraftedCeramics>()
+            .add_message::<InteractionRequested>()
+            .add_message::<NpcGiftRequested>()
+            .add_systems(Startup, (spawn_npc_world, spawn_dialogue_ui))
+            .add_systems(
+                Update,
+                (
+                    update_npc_schedules,
+                    handle_npc_talks,
+                    handle_npc_gifts,
+                    update_dialogue_ui,
+                )
+                    .chain(),
+            );
     }
 }
 
@@ -113,6 +175,142 @@ const NPCS: [NpcDefinition; 3] = [
 ];
 
 const SOCIAL_TILE: (u8, u8) = (12, 16);
+
+#[derive(Debug, Clone, Copy)]
+pub struct NpcDialoguePools {
+    pub generic: &'static [&'static str],
+    pub request: &'static [&'static str],
+    pub relationship: &'static [&'static str],
+}
+
+const BAKER_DIALOGUE: NpcDialoguePools = NpcDialoguePools {
+    generic: &[
+        "The morning bread smells best when it is still warm.",
+        "I keep running out of cups. People apparently like drinking things.",
+        "A quiet bakery is a good place to plan tomorrow's batch.",
+        "The meadow clay makes a lovely little cup.",
+        "Come by later; the ovens are busy right now.",
+    ],
+    request: &[
+        "Could you make a few cups for the bakery counter?",
+        "A pair of sturdy bowls would be perfect for serving soup.",
+        "Your pottery would make this little bakery feel like home.",
+    ],
+    relationship: &[
+        "You have become one of my favorite regulars.",
+        "I saved you the first warm loaf. That's what friends are for.",
+        "The bakery feels brighter whenever you stop by.",
+    ],
+};
+
+const CARPENTER_DIALOGUE: NpcDialoguePools = NpcDialoguePools {
+    generic: &[
+        "Measure twice, cut once. Then measure once more for luck.",
+        "A good shelf should make the things on it feel proud.",
+        "The workshop is quietest before the first saw starts.",
+        "I can fix most things with patience and a steady hand.",
+        "That ceramic would look right at home on a timber shelf.",
+    ],
+    request: &[
+        "Could you make a bowl for the workbench? It catches every loose nail.",
+        "A vase would brighten up this pile of lumber.",
+        "Bring me a fired piece and I'll find it a place in the workshop.",
+    ],
+    relationship: &[
+        "I built you a little hook for your workshop apron.",
+        "I trust your eye for a good shape. That means something to me.",
+        "There's always room at my workbench for a friend.",
+    ],
+};
+
+const MERCHANT_DIALOGUE: NpcDialoguePools = NpcDialoguePools {
+    generic: &[
+        "A good shopkeeper knows when to listen as well as when to bargain.",
+        "Every little object has a story. Some just need the right shelf.",
+        "The coast has been bringing in the loveliest pale clay lately.",
+        "Take your time browsing; there's no rush in this little town.",
+        "I keep a ledger, but I never write down a kind favor.",
+    ],
+    request: &[
+        "Could you bring a fired cup for the front window display?",
+        "A bowl with a bright glaze would catch every customer's eye.",
+        "I would love to stock one of your vases in the shop.",
+    ],
+    relationship: &[
+        "For you, my friend, I'll always save the best spot in the window.",
+        "You have a knack for finding treasures worth keeping.",
+        "No ledger could measure how much I appreciate your visits.",
+    ],
+};
+
+/// Authored preferences. Gifts outside these lists do not increase friendship.
+pub const NPC_LIKED_CERAMIC_FORMS: [(NpcCharacter, &[CeramicForm]); 3] = [
+    (NpcCharacter::Baker, &[CeramicForm::Cup, CeramicForm::Bowl]),
+    (
+        NpcCharacter::Carpenter,
+        &[CeramicForm::Bowl, CeramicForm::Vase],
+    ),
+    (
+        NpcCharacter::Merchant,
+        &[CeramicForm::Cup, CeramicForm::Bowl, CeramicForm::Vase],
+    ),
+];
+
+pub fn dialogue_pools(character: NpcCharacter) -> &'static NpcDialoguePools {
+    match character {
+        NpcCharacter::Baker => &BAKER_DIALOGUE,
+        NpcCharacter::Carpenter => &CARPENTER_DIALOGUE,
+        NpcCharacter::Merchant => &MERCHANT_DIALOGUE,
+    }
+}
+
+/// Select an authored line by stable ordinal; no text is generated at runtime.
+pub fn select_dialogue(
+    character: NpcCharacter,
+    kind: NpcDialogueKind,
+    ordinal: usize,
+) -> &'static str {
+    let pools = dialogue_pools(character);
+    let lines = match kind {
+        NpcDialogueKind::Generic => pools.generic,
+        NpcDialogueKind::Request => pools.request,
+        NpcDialogueKind::Relationship => pools.relationship,
+    };
+    lines[ordinal % lines.len()]
+}
+
+/// Give a fired ceramic if present. Only authored liked forms grant +5 friendship.
+pub fn give_ceramic(
+    inventory: &mut Inventory,
+    ceramics: &[CeramicItem],
+    friendship: &mut NpcFriendship,
+    character: NpcCharacter,
+    id: CeramicObjectId,
+) -> GiftResult {
+    if !inventory.contains_ceramic(id) {
+        return GiftResult::NotOwned;
+    }
+    let Some(item) = ceramics.iter().find(|item| item.id == id) else {
+        return GiftResult::UnknownCeramic;
+    };
+    if item.state() != ProcessingState::Fired {
+        return GiftResult::NotFired;
+    }
+    let liked_forms = NPC_LIKED_CERAMIC_FORMS
+        .iter()
+        .find(|(npc, _)| *npc == character)
+        .map(|(_, forms)| *forms)
+        .expect("every NPC has an authored gift preference");
+    if !inventory.remove_ceramic(id) {
+        return GiftResult::NotOwned;
+    }
+    if liked_forms.contains(&item.form()) {
+        friendship.increase(5);
+        GiftResult::Liked
+    } else {
+        GiftResult::NotLiked
+    }
+}
 
 #[derive(Clone, Copy)]
 struct SchedulePhase {
@@ -274,6 +472,101 @@ fn route_sample(
     )
 }
 
+#[derive(Component)]
+struct NpcDialogueText;
+
+fn spawn_dialogue_ui(mut commands: Commands) {
+    commands.spawn((
+        NpcDialogueText,
+        Text::new(""),
+        Node {
+            position_type: PositionType::Absolute,
+            bottom: px(48),
+            left: px(16),
+            ..default()
+        },
+    ));
+}
+
+fn handle_npc_talks(
+    mut requests: MessageReader<InteractionRequested>,
+    mut npcs: Query<(&NpcCharacter, &mut NpcFriendship)>,
+    mut display: ResMut<NpcDialogueDisplay>,
+) {
+    for request in requests.read() {
+        let Ok((character, mut friendship)) = npcs.get_mut(request.target) else {
+            continue;
+        };
+        friendship.increase(1);
+        let kind = if friendship.0 >= 50 {
+            NpcDialogueKind::Relationship
+        } else {
+            NpcDialogueKind::Generic
+        };
+        display.0 = Some(NpcDialogueLine {
+            speaker: *character,
+            kind,
+            text: select_dialogue(*character, kind, usize::from(friendship.0)),
+        });
+    }
+}
+
+fn handle_npc_gifts(
+    mut requests: MessageReader<NpcGiftRequested>,
+    mut inventory: ResMut<Inventory>,
+    crafted: Res<CraftedCeramics>,
+    mut npcs: Query<(&NpcCharacter, &mut NpcFriendship)>,
+    mut display: ResMut<NpcDialogueDisplay>,
+) {
+    for request in requests.read() {
+        let Ok((character, mut friendship)) = npcs.get_mut(request.npc) else {
+            continue;
+        };
+        let result = give_ceramic(
+            &mut inventory,
+            &crafted.items,
+            &mut friendship,
+            *character,
+            request.item,
+        );
+        if matches!(result, GiftResult::Liked | GiftResult::NotLiked) {
+            let kind = if result == GiftResult::Liked && friendship.0 >= 50 {
+                NpcDialogueKind::Relationship
+            } else {
+                NpcDialogueKind::Generic
+            };
+            display.0 = Some(NpcDialogueLine {
+                speaker: *character,
+                kind,
+                text: select_dialogue(*character, kind, usize::from(friendship.0)),
+            });
+        }
+    }
+}
+
+fn update_dialogue_ui(
+    display: Res<NpcDialogueDisplay>,
+    mut labels: Query<&mut Text, With<NpcDialogueText>>,
+) {
+    if !display.is_changed() {
+        return;
+    }
+    let text = display.0.as_ref().map_or_else(String::new, |line| {
+        format!("{}: {}", npc_name(line.speaker), line.text)
+    });
+    for mut label in &mut labels {
+        label.0.clone_from(&text);
+    }
+}
+
+const fn npc_name(character: NpcCharacter) -> &'static str {
+    match character {
+        NpcCharacter::Baker => "Baker",
+        NpcCharacter::Carpenter => "Carpenter",
+        NpcCharacter::Merchant => "Merchant",
+    }
+}
+
 fn update_npc_schedules(
     clock: Res<GameClock>,
     mut npcs: Query<(&NpcCharacter, &mut Transform, &mut NpcScheduleDebug)>,
@@ -348,6 +641,7 @@ fn spawn_npc_world(
                 definition.character,
                 character_transform,
                 Interactable::new(definition.interaction_prompt),
+                NpcFriendship::default(),
                 Visibility::default(),
                 NpcScheduleDebug {
                     state: NpcScheduleState::Home,
@@ -455,6 +749,197 @@ fn location_transform(tile: (u8, u8)) -> Transform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fired_ceramic(id: u64, form: CeramicForm) -> CeramicItem {
+        crate::ceramics::CeramicItemTemplate {
+            form,
+            clay: crate::ceramics::ClayMaterial::Common,
+            glaze: crate::ceramics::Glaze::None,
+            state: ProcessingState::Fired,
+        }
+        .instantiate(CeramicObjectId(id))
+    }
+
+    #[test]
+    fn every_npc_has_the_required_authored_dialogue_and_explicit_gift_preferences() {
+        for character in [
+            NpcCharacter::Baker,
+            NpcCharacter::Carpenter,
+            NpcCharacter::Merchant,
+        ] {
+            let pools = dialogue_pools(character);
+            assert!(pools.generic.len() >= 5);
+            assert!(pools.request.len() >= 3);
+            assert!(pools.relationship.len() >= 3);
+            for kind in [
+                NpcDialogueKind::Generic,
+                NpcDialogueKind::Request,
+                NpcDialogueKind::Relationship,
+            ] {
+                assert!(!select_dialogue(character, kind, usize::MAX).is_empty());
+            }
+        }
+        assert_eq!(NPC_LIKED_CERAMIC_FORMS.len(), 3);
+        assert!(
+            NPC_LIKED_CERAMIC_FORMS
+                .iter()
+                .all(|(_, forms)| !forms.is_empty())
+        );
+    }
+
+    #[test]
+    fn friendship_increments_and_caps_at_one_hundred() {
+        let mut friendship = NpcFriendship(99);
+        friendship.increase(1);
+        assert_eq!(friendship.0, 100);
+        friendship.increase(5);
+        assert_eq!(friendship.0, 100);
+        friendship.increase(0);
+        assert_eq!(friendship.0, 100);
+    }
+
+    #[test]
+    fn liked_fired_gifts_are_consumed_and_add_five_friendship() {
+        let mut inventory = Inventory::default();
+        let item = fired_ceramic(1, CeramicForm::Cup);
+        assert!(inventory.add_ceramic(item.id));
+        let mut friendship = NpcFriendship(97);
+        assert_eq!(
+            give_ceramic(
+                &mut inventory,
+                &[item],
+                &mut friendship,
+                NpcCharacter::Baker,
+                item.id
+            ),
+            GiftResult::Liked
+        );
+        assert_eq!(friendship.0, 100);
+        assert!(!inventory.contains_ceramic(item.id));
+    }
+
+    #[test]
+    fn liked_gift_rules_are_npc_specific_and_reject_unfinished_or_unowned_items() {
+        let mut inventory = Inventory::default();
+        let vase = fired_ceramic(2, CeramicForm::Vase);
+        inventory.add_ceramic(vase.id);
+        let mut friendship = NpcFriendship::default();
+        assert_eq!(
+            give_ceramic(
+                &mut inventory,
+                &[vase],
+                &mut friendship,
+                NpcCharacter::Baker,
+                vase.id
+            ),
+            GiftResult::NotLiked
+        );
+        assert_eq!(friendship.0, 0);
+        assert!(!inventory.contains_ceramic(vase.id));
+
+        let unfired = CeramicItem {
+            template: crate::ceramics::CeramicItemTemplate {
+                state: ProcessingState::Greenware,
+                ..vase.template
+            },
+            ..vase
+        };
+        inventory.add_ceramic(unfired.id);
+        assert_eq!(
+            give_ceramic(
+                &mut inventory,
+                &[unfired],
+                &mut friendship,
+                NpcCharacter::Merchant,
+                unfired.id
+            ),
+            GiftResult::NotFired
+        );
+        assert!(inventory.contains_ceramic(unfired.id));
+        let unowned = fired_ceramic(3, CeramicForm::Cup);
+        assert_eq!(
+            give_ceramic(
+                &mut inventory,
+                &[unowned],
+                &mut friendship,
+                NpcCharacter::Merchant,
+                unowned.id
+            ),
+            GiftResult::NotOwned
+        );
+    }
+
+    #[test]
+    fn talking_increases_friendship_and_presents_authored_dialogue() {
+        let mut app = App::new();
+        app.insert_resource(Assets::<Mesh>::default());
+        app.insert_resource(Assets::<StandardMaterial>::default());
+        app.insert_resource(GameClock::default());
+        app.add_plugins(NpcPlugin);
+        app.update();
+        let entity = {
+            let world = app.world_mut();
+            let mut query = world.query_filtered::<Entity, With<NpcCharacter>>();
+            query.iter(world).next().unwrap()
+        };
+        app.world_mut()
+            .write_message(InteractionRequested { target: entity });
+        app.update();
+        let world = app.world();
+        assert_eq!(world.get::<NpcFriendship>(entity), Some(&NpcFriendship(1)));
+        let line = world.resource::<NpcDialogueDisplay>().0.as_ref().unwrap();
+        assert_eq!(line.kind, NpcDialogueKind::Generic);
+        assert!(dialogue_pools(line.speaker).generic.contains(&line.text));
+    }
+
+    #[test]
+    fn liked_gift_event_updates_friendship_and_presents_authored_dialogue() {
+        let mut app = App::new();
+        app.insert_resource(Assets::<Mesh>::default());
+        app.insert_resource(Assets::<StandardMaterial>::default());
+        app.insert_resource(GameClock::default());
+        app.add_plugins(NpcPlugin);
+        app.update();
+
+        let item = fired_ceramic(42, CeramicForm::Cup);
+        app.world_mut()
+            .resource_mut::<Inventory>()
+            .add_ceramic(item.id);
+        app.world_mut()
+            .resource_mut::<CraftedCeramics>()
+            .items
+            .push(item);
+        let npc = app
+            .world_mut()
+            .spawn((NpcCharacter::Baker, NpcFriendship(98)))
+            .id();
+        app.world_mut()
+            .write_message(NpcGiftRequested { npc, item: item.id });
+        app.update();
+
+        assert_eq!(
+            app.world().get::<NpcFriendship>(npc),
+            Some(&NpcFriendship(100))
+        );
+        let line = app
+            .world()
+            .resource::<NpcDialogueDisplay>()
+            .0
+            .as_ref()
+            .unwrap();
+        assert_eq!(line.speaker, NpcCharacter::Baker);
+        assert_eq!(line.kind, NpcDialogueKind::Relationship);
+        assert!(
+            dialogue_pools(line.speaker)
+                .relationship
+                .contains(&line.text)
+        );
+        assert!(
+            !app.world()
+                .resource::<Inventory>()
+                .contains_ceramic(item.id)
+        );
+    }
 
     #[test]
     fn schedule_boundaries_are_deterministic_and_expose_expected_destinations() {
