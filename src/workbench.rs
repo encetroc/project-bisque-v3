@@ -4,15 +4,26 @@ use bevy::prelude::*;
 
 use crate::{
     ceramics::{CeramicForm, CeramicItem, ClayMaterial, Glaze, recipe_for},
+    economy::Wallet,
     interaction::{Interactable, InteractionRequested},
     inventory::{CeramicObjectId, Inventory},
+    machine_upgrades::{MachineUpgradeCost, MachineUpgradeError, pay_machine_upgrade},
+    planet::ResourceType,
     planet::{DEFAULT_PLANET_RADIUS, PlanetFace, PlanetTile, TileCoordinate, sample_tile_surface},
     surface_transform::{SurfaceLocation, surface_transform},
 };
 
-/// Marks an entity as a level-one shaping workbench.
-#[derive(Component, Debug, Clone, Copy, Default)]
-pub struct Workbench;
+/// Workbench level; the single upgrade unlocks vase shaping.
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Workbench {
+    pub upgraded: bool,
+}
+
+pub const WORKBENCH_UPGRADE_COST: MachineUpgradeCost = MachineUpgradeCost {
+    coins: 30,
+    material: ResourceType::Wood,
+    quantity: 5,
+};
 
 /// Player's current recipe selection while using a workbench.
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +66,21 @@ pub enum CraftError {
     IdentityExhausted,
 }
 
+pub fn upgrade_workbench(
+    workbench: &mut Workbench,
+    inventory: &mut Inventory,
+    wallet: &mut Wallet,
+) -> Result<(), MachineUpgradeError> {
+    pay_machine_upgrade(
+        workbench.upgraded,
+        WORKBENCH_UPGRADE_COST,
+        inventory,
+        wallet,
+    )?;
+    workbench.upgraded = true;
+    Ok(())
+}
+
 /// Craft the selected recipe atomically: inventory and item identity only change on success.
 pub fn craft_greenware(
     inventory: &mut Inventory,
@@ -63,7 +89,20 @@ pub fn craft_greenware(
     clay: ClayMaterial,
     glaze: Glaze,
 ) -> Result<CeramicObjectId, CraftError> {
-    if !matches!(form, CeramicForm::Cup | CeramicForm::Bowl) {
+    craft_greenware_at_level(inventory, crafted, form, clay, glaze, false)
+}
+
+fn craft_greenware_at_level(
+    inventory: &mut Inventory,
+    crafted: &mut CraftedCeramics,
+    form: CeramicForm,
+    clay: ClayMaterial,
+    glaze: Glaze,
+    vase_unlocked: bool,
+) -> Result<CeramicObjectId, CraftError> {
+    if !matches!(form, CeramicForm::Cup | CeramicForm::Bowl)
+        && !(vase_unlocked && form == CeramicForm::Vase)
+    {
         return Err(CraftError::FormLocked);
     }
     let recipe = recipe_for(form, clay, glaze).expect("all supported recipes are catalogued");
@@ -123,7 +162,7 @@ fn spawn_workbench(
     let workbench = commands
         .spawn((
             Name::new("Ceramics workbench"),
-            Workbench,
+            Workbench::default(),
             Interactable::new("Use workbench"),
             transform,
             Visibility::default(),
@@ -165,6 +204,7 @@ impl Plugin for WorkbenchPlugin {
             .init_resource::<WorkbenchSelection>()
             .init_resource::<CraftedCeramics>()
             .init_resource::<WorkbenchFeedback>()
+            .init_resource::<Wallet>()
             .add_systems(Startup, (spawn_workbench, spawn_workbench_help))
             .add_systems(
                 Update,
@@ -206,8 +246,10 @@ fn begin_workbench_use(
 fn control_workbench(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut selection: ResMut<WorkbenchSelection>,
-    mut inventory: ResMut<Inventory>,
     mut crafted: ResMut<CraftedCeramics>,
+    mut workbenches: Query<&mut Workbench>,
+    mut inventory: ResMut<Inventory>,
+    mut wallet: ResMut<Wallet>,
     mut feedback: ResMut<WorkbenchFeedback>,
 ) {
     if !selection.active {
@@ -218,11 +260,37 @@ fn control_workbench(
         feedback.0 = None;
         return;
     }
+    if keyboard.just_pressed(KeyCode::KeyU) {
+        let Ok(mut workbench) = workbenches.single_mut() else {
+            return;
+        };
+        feedback.0 = Some(
+            match upgrade_workbench(&mut workbench, &mut inventory, &mut wallet) {
+                Ok(()) => "Workbench upgraded: vase unlocked.".to_owned(),
+                Err(MachineUpgradeError::AlreadyUpgraded) => {
+                    "Workbench is already upgraded.".to_owned()
+                }
+                Err(MachineUpgradeError::InsufficientCoins) => {
+                    "Workbench upgrade needs 30 coins.".to_owned()
+                }
+                Err(MachineUpgradeError::InsufficientMaterials) => {
+                    "Workbench upgrade needs 5 wood.".to_owned()
+                }
+            },
+        );
+        return;
+    }
 
     if keyboard.just_pressed(KeyCode::Digit1) {
         selection.form = CeramicForm::Cup;
     } else if keyboard.just_pressed(KeyCode::Digit2) {
         selection.form = CeramicForm::Bowl;
+    } else if keyboard.just_pressed(KeyCode::Digit3)
+        && workbenches
+            .single()
+            .is_ok_and(|workbench| workbench.upgraded)
+    {
+        selection.form = CeramicForm::Vase;
     }
     if keyboard.just_pressed(KeyCode::KeyC) {
         selection.clay = ClayMaterial::Common;
@@ -245,8 +313,18 @@ fn control_workbench(
         let WorkbenchSelection {
             form, clay, glaze, ..
         } = *selection;
+        let vase_unlocked = workbenches
+            .single()
+            .is_ok_and(|workbench| workbench.upgraded);
         feedback.0 = Some(
-            match craft_greenware(&mut inventory, &mut crafted, form, clay, glaze) {
+            match craft_greenware_at_level(
+                &mut inventory,
+                &mut crafted,
+                form,
+                clay,
+                glaze,
+                vase_unlocked,
+            ) {
                 Ok(_) => "Greenware crafted!".to_owned(),
                 Err(CraftError::FormLocked) => "Vase is locked.".to_owned(),
                 Err(CraftError::MissingClay) => "Not enough selected clay (3 required).".to_owned(),
@@ -269,7 +347,7 @@ fn update_workbench_help(
         String::new()
     } else {
         format!(
-            "Workbench — 1 Cup / 2 Bowl | C Common / R Red / P Pale clay | 0 None / 3 Blue / 4 Green / 5 White glaze | Enter Craft | Esc Close\nSelected: {:?}, {:?} clay, {:?} glaze{}",
+            "Workbench — 1 Cup / 2 Bowl / 3 Vase | U Upgrade (30 coins + 5 wood) | C Common / R Red / P Pale clay | 0 None / 3 Blue / 4 Green / 5 White glaze | Enter Craft | Esc Close\nSelected: {:?}, {:?} clay, {:?} glaze{}",
             selection.form,
             selection.clay,
             selection.glaze,
@@ -411,9 +489,11 @@ mod tests {
             .init_resource::<Inventory>()
             .init_resource::<CraftedCeramics>()
             .init_resource::<WorkbenchFeedback>()
+            .init_resource::<Wallet>()
             .init_resource::<ButtonInput<KeyCode>>()
             .add_systems(Update, control_workbench);
         app.world_mut().resource_mut::<WorkbenchSelection>().active = true;
+        app.world_mut().spawn(Workbench::default());
         let mut keyboard = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
         keyboard.press(KeyCode::Digit2);
         keyboard.press(KeyCode::KeyR);
@@ -423,5 +503,61 @@ mod tests {
         assert_eq!(selected.form, CeramicForm::Bowl);
         assert_eq!(selected.clay, ClayMaterial::Red);
         assert_eq!(selected.glaze, Glaze::Blue);
+    }
+
+    #[test]
+    fn workbench_upgrade_requires_payment_unlocks_vase_and_cannot_repeat() {
+        let mut workbench = Workbench::default();
+        let mut inventory = Inventory::default();
+        let mut wallet = Wallet {
+            coins: WORKBENCH_UPGRADE_COST.coins - 1,
+        };
+        inventory.add_resource(ResourceType::Wood, WORKBENCH_UPGRADE_COST.quantity);
+        let before = inventory.clone();
+        assert_eq!(
+            upgrade_workbench(&mut workbench, &mut inventory, &mut wallet),
+            Err(MachineUpgradeError::InsufficientCoins)
+        );
+        assert_eq!(inventory, before);
+        assert!(!workbench.upgraded);
+
+        wallet.coins += 1;
+        upgrade_workbench(&mut workbench, &mut inventory, &mut wallet).unwrap();
+        assert_eq!(workbench, Workbench { upgraded: true });
+        assert_eq!(wallet.coins, 0);
+        assert_eq!(inventory.resource_count(ResourceType::Wood), 0);
+        stock(&mut inventory, ClayMaterial::Common, 3);
+        let mut crafted = CraftedCeramics::default();
+        let id = craft_greenware_at_level(
+            &mut inventory,
+            &mut crafted,
+            CeramicForm::Vase,
+            ClayMaterial::Common,
+            Glaze::None,
+            true,
+        )
+        .unwrap();
+        assert_eq!(crafted.items[0].id, id);
+        assert_eq!(crafted.items[0].form(), CeramicForm::Vase);
+        assert_eq!(
+            upgrade_workbench(&mut workbench, &mut inventory, &mut wallet),
+            Err(MachineUpgradeError::AlreadyUpgraded)
+        );
+        assert_eq!(wallet.coins, 0);
+    }
+
+    #[test]
+    fn workbench_upgrade_rejects_missing_material_without_charging() {
+        let mut workbench = Workbench::default();
+        let mut inventory = Inventory::default();
+        let mut wallet = Wallet {
+            coins: WORKBENCH_UPGRADE_COST.coins,
+        };
+        assert_eq!(
+            upgrade_workbench(&mut workbench, &mut inventory, &mut wallet),
+            Err(MachineUpgradeError::InsufficientMaterials)
+        );
+        assert_eq!(wallet.coins, WORKBENCH_UPGRADE_COST.coins);
+        assert!(!workbench.upgraded);
     }
 }
