@@ -70,9 +70,40 @@ pub fn spawn_ceramic_visual(
     item: CeramicItem,
     transform: Transform,
 ) -> Entity {
-    let color = ceramic_color(item.template);
+    spawn_ceramic_visual_with_style(commands, meshes, materials, item, transform, false)
+}
+
+/// Spawn a translucent, unlit placement preview using the same item-to-form mapping.
+pub fn spawn_ceramic_ghost(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    item: CeramicItem,
+    transform: Transform,
+) -> Entity {
+    spawn_ceramic_visual_with_style(commands, meshes, materials, item, transform, true)
+}
+
+fn spawn_ceramic_visual_with_style(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    item: CeramicItem,
+    transform: Transform,
+    ghost: bool,
+) -> Entity {
+    let mut color = ceramic_color(item.template);
+    if ghost {
+        color.set_alpha(0.45);
+    }
     let material = materials.add(StandardMaterial {
         base_color: color,
+        alpha_mode: if ghost {
+            AlphaMode::Blend
+        } else {
+            AlphaMode::Opaque
+        },
+        unlit: ghost,
         perceptual_roughness: if item.state() == ProcessingState::Fired {
             0.28
         } else {
