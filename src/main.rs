@@ -8,6 +8,7 @@ pub mod economy;
 pub mod game_clock;
 pub mod interaction;
 pub mod inventory;
+pub mod inventory_ui;
 pub mod kiln;
 pub mod machine_upgrades;
 pub mod npc_placement_slots;
@@ -35,6 +36,7 @@ fn main() {
         .add_plugins(resource_nodes::ResourceNodePlugin)
         .add_plugins(interaction::InteractionPlugin)
         .add_plugins(workbench::WorkbenchPlugin)
+        .add_plugins(inventory_ui::InventoryUiPlugin)
         .add_plugins(drying_rack::DryingRackPlugin)
         .add_plugins(kiln::KilnPlugin)
         .add_plugins(studio::StudioPlugin)

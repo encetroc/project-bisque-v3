@@ -321,9 +321,6 @@ fn control_kiln(
         feedback.0 = None;
         return;
     }
-    if !keyboard.just_pressed(KeyCode::Enter) {
-        return;
-    }
     let Ok(mut kiln) = kilns.get_mut(entity) else {
         active.0 = None;
         return;
@@ -396,20 +393,52 @@ fn refresh_kiln_visuals(
 fn update_help_text(
     active: Res<KilnUse>,
     kilns: Query<&Kiln>,
+    crafted: Res<CraftedCeramics>,
+    clock: Res<GameClock>,
     feedback: Res<KilnFeedback>,
     mut labels: Query<&mut Text, With<KilnHelpText>>,
 ) {
     let message = if let Some(entity) = active.0 {
         if let Ok(kiln) = kilns.get(entity) {
-            format!(
-                "Kiln ({}/{}) — U Upgrade (40 coins + 3 iron) | Enter: fire dry ceramic / collect fired item | Esc: close{}",
-                kiln.capacity(),
+            let now = game_minutes(&clock);
+            let mut status = format!(
+                "Kiln ({}/{}) — U Upgrade (40 coins + 3 iron) | Enter: fire dry ceramic / collect fired item | Esc: close",
                 kiln.occupied(),
-                feedback
-                    .0
-                    .as_ref()
-                    .map_or_else(String::new, |text| format!(" — {text}"))
-            )
+                kiln.capacity()
+            );
+            for (slot, job) in kiln.slots[..kiln.capacity()].iter().enumerate() {
+                let details = job.map_or_else(
+                    || "Empty".to_owned(),
+                    |job| {
+                        let progress = crafted
+                            .items
+                            .iter()
+                            .find(|item| item.id == job.object)
+                            .map_or_else(
+                                || format!("Ceramic #{:03}", job.object.0),
+                                |item| {
+                                    format!(
+                                        "{:?} #{:03} {:?}",
+                                        item.form(),
+                                        item.id.0,
+                                        item.state()
+                                    )
+                                },
+                            );
+                        let remaining = (FIRING_TIME_MINUTES - (now - job.started_at)).max(0.0);
+                        format!(
+                            "{progress}, {}h {:02}m remaining",
+                            (remaining / 60.0) as u64,
+                            remaining as u64 % 60
+                        )
+                    },
+                );
+                status.push_str(&format!("\nSlot {}: {details}", slot + 1));
+            }
+            if let Some(feedback) = &feedback.0 {
+                status.push_str(&format!("\n{feedback}"));
+            }
+            status
         } else {
             String::new()
         }
@@ -434,6 +463,47 @@ mod tests {
             state: ProcessingState::Dry,
         }
         .instantiate(CeramicObjectId(id))
+    }
+
+    #[test]
+    fn kiln_panel_displays_the_occupied_item_and_game_time_remaining_headlessly() {
+        let item = dry_item(51);
+        let mut kiln = Kiln::default();
+        let mut inventory = Inventory::default();
+        inventory.add_ceramic(item.id);
+        let clock = GameClock::default();
+        assert_eq!(
+            insert_dry_ceramic(&mut kiln, &mut inventory, &[item], item.id, &clock),
+            Ok(0)
+        );
+
+        let mut app = App::new();
+        app.insert_resource(clock)
+            .insert_resource(KilnUse::default())
+            .insert_resource(KilnFeedback::default())
+            .insert_resource(inventory)
+            .init_resource::<CraftedCeramics>()
+            .add_systems(Update, update_help_text);
+        app.world_mut()
+            .resource_mut::<CraftedCeramics>()
+            .items
+            .push(item);
+        let kiln_entity = app.world_mut().spawn(kiln).id();
+        app.world_mut().resource_mut::<KilnUse>().0 = Some(kiln_entity);
+        app.world_mut().spawn((KilnHelpText, Text::new("")));
+        app.update();
+
+        let Ok(text) = app
+            .world_mut()
+            .query_filtered::<&Text, With<KilnHelpText>>()
+            .single(app.world())
+        else {
+            panic!("kiln status panel should exist");
+        };
+        assert!(text.0.contains("Kiln (1/2)"));
+        assert!(text.0.contains("Slot 1: Vase #051 Dry"));
+        assert!(text.0.contains("4h 00m remaining"));
+        assert!(text.0.contains("Slot 2: Empty"));
     }
 
     #[test]

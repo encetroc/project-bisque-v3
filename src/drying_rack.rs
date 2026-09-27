@@ -404,20 +404,51 @@ fn refresh_rack_visuals(
 fn update_help_text(
     active: Res<DryingRackUse>,
     racks: Query<&DryingRack>,
+    crafted: Res<CraftedCeramics>,
+    clock: Res<GameClock>,
     feedback: Res<RackFeedback>,
     mut labels: Query<&mut Text, With<RackHelpText>>,
 ) {
     let message = if let Some(entity) = active.0 {
         if let Ok(rack) = racks.get(entity) {
-            format!(
-                "Drying rack ({}/{}) — U Upgrade (20 coins + 5 wood) | Enter: place greenware / collect dry item | Esc: close{}",
+            let now = game_minutes(&clock);
+            let mut status = format!(
+                "Drying rack ({}/{}) — U Upgrade (20 coins + 5 wood) | Enter: place greenware / collect dry item | Esc: close",
                 rack.occupied(),
-                rack.capacity(),
-                feedback
-                    .0
-                    .as_ref()
-                    .map_or_else(String::new, |text| format!(" — {text}"))
-            )
+                rack.capacity()
+            );
+            for (slot, job) in rack.slots[..rack.capacity()].iter().enumerate() {
+                let details = job.map_or_else(
+                    || "Empty".to_owned(),
+                    |job| {
+                        let item = crafted.items.iter().find(|item| item.id == job.object);
+                        let remaining = (DRYING_TIME_MINUTES - (now - job.started_at)).max(0.0);
+                        let progress = item.map_or_else(
+                            || "unknown ceramic".to_owned(),
+                            |item| {
+                                format!(
+                                    "{:?} #{:03} ({:?} clay, {:?} glaze, {:?})",
+                                    item.form(),
+                                    item.id.0,
+                                    item.clay(),
+                                    item.glaze(),
+                                    item.state()
+                                )
+                            },
+                        );
+                        format!(
+                            "{progress}, {}h {:02}m remaining",
+                            (remaining / 60.0) as u64,
+                            remaining as u64 % 60
+                        )
+                    },
+                );
+                status.push_str(&format!("\nSlot {}: {details}", slot + 1));
+            }
+            if let Some(feedback) = &feedback.0 {
+                status.push_str(&format!("\n{feedback}"));
+            }
+            status
         } else {
             String::new()
         }
@@ -442,6 +473,48 @@ mod tests {
             state: ProcessingState::Greenware,
         }
         .instantiate(CeramicObjectId(id))
+    }
+
+    #[test]
+    fn rack_panel_displays_the_occupied_item_and_game_time_remaining_headlessly() {
+        let item = greenware(41);
+        let mut rack = DryingRack::default();
+        let mut inventory = Inventory::default();
+        inventory.add_ceramic(item.id);
+        let clock = GameClock::default();
+        assert_eq!(
+            insert_greenware(&mut rack, &mut inventory, &[item], item.id, &clock),
+            Ok(0)
+        );
+
+        let mut app = App::new();
+        app.insert_resource(clock)
+            .insert_resource(DryingRackUse::default())
+            .insert_resource(RackFeedback::default())
+            .insert_resource(inventory)
+            .init_resource::<CraftedCeramics>()
+            .add_systems(Update, update_help_text);
+        app.world_mut()
+            .resource_mut::<CraftedCeramics>()
+            .items
+            .push(item);
+        let rack_entity = app.world_mut().spawn(rack).id();
+        app.world_mut().resource_mut::<DryingRackUse>().0 = Some(rack_entity);
+        app.world_mut().spawn((RackHelpText, Text::new("")));
+        app.update();
+
+        let Ok(text) = app
+            .world_mut()
+            .query_filtered::<&Text, With<RackHelpText>>()
+            .single(app.world())
+        else {
+            panic!("rack status panel should exist");
+        };
+        assert!(text.0.contains("Drying rack (1/2)"));
+        assert!(text.0.contains("Slot 1: Cup #041"));
+        assert!(text.0.contains("Greenware"));
+        assert!(text.0.contains("4h 00m remaining"));
+        assert!(text.0.contains("Slot 2: Empty"));
     }
 
     #[test]

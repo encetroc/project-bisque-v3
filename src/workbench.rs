@@ -357,12 +357,17 @@ fn control_workbench(
 
 fn update_workbench_help(
     selection: Res<WorkbenchSelection>,
+    inventory: Res<Inventory>,
     workbenches: Query<&Workbench>,
     discovery: Res<RedClayDiscovery>,
     feedback: Res<WorkbenchFeedback>,
     mut labels: Query<&mut Text, With<WorkbenchHelpText>>,
 ) {
-    if !selection.is_changed() && !feedback.is_changed() && !discovery.is_changed() {
+    if !selection.is_changed()
+        && !inventory.is_changed()
+        && !feedback.is_changed()
+        && !discovery.is_changed()
+    {
         return;
     }
     let message = if !selection.active {
@@ -378,15 +383,20 @@ fn update_workbench_help(
             (true, false) => "6 Vase (find red clay)",
             (false, _) => "6 Vase (upgrade + red clay)",
         };
+        let recipe = recipe_for(selection.form, selection.clay, selection.glaze)
+            .expect("selected recipe exists in the catalog");
+        let available = inventory.resource_count(recipe.input.resource);
         format!(
-            "Workbench — 1 Cup / 2 Bowl / {vase_option} | U Upgrade (30 coins + 5 wood) | C Common / R Red / P Pale clay | 0 None / 3 Blue / 4 Green / 5 White glaze | Enter Craft | Esc Close\nSelected: {:?}, {:?} clay, {:?} glaze{}",
+            "Workbench — 1 Cup / 2 Bowl / {vase_option} | U Upgrade (30 coins + 5 wood) | C Common / R Red / P Pale clay | 0 None / 3 Blue / 4 Green / 5 White glaze | Enter Craft | Esc Close\nSelected: {:?}, {:?} clay, {:?} glaze — input {:?}: {available}/{}\n{}",
             selection.form,
             selection.clay,
             selection.glaze,
+            recipe.input.resource,
+            recipe.input.quantity,
             feedback
                 .0
                 .as_ref()
-                .map_or_else(String::new, |text| format!(" — {text}")),
+                .map_or_else(String::new, |text| text.clone()),
         )
     };
     for mut label in &mut labels {
