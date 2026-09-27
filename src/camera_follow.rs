@@ -19,6 +19,13 @@ pub const CAMERA_PITCH: f32 = 50.0_f32.to_radians();
 /// Perspective field of view, in radians.
 pub const CAMERA_FOV: f32 = 30.0_f32.to_radians();
 const FOLLOW_SPEED: f32 = 8.0;
+/// Materials and bounds for one renderable part that can fade between the camera and player.
+#[derive(Component)]
+pub struct CameraObstructionFade {
+    pub opaque_material: Handle<StandardMaterial>,
+    pub faded_material: Handle<StandardMaterial>,
+    pub radius: f32,
+}
 
 #[derive(Component)]
 struct CameraTarget {
@@ -36,7 +43,11 @@ pub struct SurfaceCameraFollowPlugin;
 impl Plugin for SurfaceCameraFollowPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_camera_rig)
-            .add_systems(Update, follow_surface_player);
+            .add_systems(Update, follow_surface_player)
+            .add_systems(
+                PostUpdate,
+                fade_camera_obstructions.after(TransformSystems::Propagate),
+            );
     }
 }
 
@@ -126,6 +137,57 @@ fn follow_surface_player(
     }
 }
 
+fn fade_camera_obstructions(
+    players: Query<&GlobalTransform, With<SurfacePlayer>>,
+    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<SurfacePlayer>)>,
+    mut fadeables: Query<(
+        &GlobalTransform,
+        &CameraObstructionFade,
+        &mut MeshMaterial3d<StandardMaterial>,
+    )>,
+) {
+    let (Ok(player), Ok(camera)) = (players.single(), cameras.single()) else {
+        return;
+    };
+    let player_position = player.translation();
+    let camera_position = camera.translation();
+
+    for (transform, fadeable, mut material) in &mut fadeables {
+        let obstructed = obstructs_view(
+            transform.translation(),
+            fadeable.radius,
+            camera_position,
+            player_position,
+        );
+        let desired_material = if obstructed {
+            &fadeable.faded_material
+        } else {
+            &fadeable.opaque_material
+        };
+        if material.0 != *desired_material {
+            material.0 = desired_material.clone();
+        }
+    }
+}
+
+fn obstructs_view(point: Vec3, radius: f32, camera: Vec3, player: Vec3) -> bool {
+    let view = player - camera;
+    let view_length_squared = view.length_squared();
+    if !point.is_finite()
+        || !camera.is_finite()
+        || !player.is_finite()
+        || view_length_squared <= 0.0
+    {
+        return false;
+    }
+    let along_view = (point - camera).dot(view) / view_length_squared;
+    if !(0.0..1.0).contains(&along_view) {
+        return false;
+    }
+    let closest_point = camera + view * along_view;
+    point.distance_squared(closest_point) <= radius * radius
+}
+
 fn wrap_yaw(yaw: f32) -> f32 {
     yaw.rem_euclid(std::f32::consts::TAU)
 }
@@ -143,6 +205,94 @@ fn smooth_follow(current: Vec3, desired: Vec3, delta_secs: f32) -> Vec3 {
 mod tests {
     use super::*;
     use crate::surface_transform::{SurfaceLocation, surface_transform};
+
+    #[test]
+    fn obstruction_fades_then_restores_and_ignores_unmarked_materials() {
+        let opaque = Handle::<StandardMaterial>::default();
+        let faded = Handle::<StandardMaterial>::default();
+        let mut app = App::new();
+        app.add_systems(Update, fade_camera_obstructions);
+        app.world_mut().spawn((
+            SurfacePlayer::new(SurfaceLocation::new(Vec3::Y, 0.0), Vec3::Z, 40.0),
+            GlobalTransform::IDENTITY,
+        ));
+        app.world_mut().spawn((
+            Camera3d::default(),
+            GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 12.0)),
+        ));
+        let tree_part = app
+            .world_mut()
+            .spawn((
+                GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 6.0)),
+                CameraObstructionFade {
+                    opaque_material: opaque.clone(),
+                    faded_material: faded.clone(),
+                    radius: 0.9,
+                },
+                MeshMaterial3d(opaque.clone()),
+            ))
+            .id();
+        let unrelated = app.world_mut().spawn(MeshMaterial3d(opaque.clone())).id();
+
+        app.update();
+        assert_eq!(
+            app.world()
+                .get::<MeshMaterial3d<StandardMaterial>>(tree_part)
+                .unwrap()
+                .0,
+            faded
+        );
+        assert_eq!(
+            app.world()
+                .get::<MeshMaterial3d<StandardMaterial>>(unrelated)
+                .unwrap()
+                .0,
+            opaque
+        );
+
+        app.world_mut()
+            .entity_mut(tree_part)
+            .insert(GlobalTransform::from_translation(Vec3::new(3.0, 0.0, 6.0)));
+        app.update();
+        assert_eq!(
+            app.world()
+                .get::<MeshMaterial3d<StandardMaterial>>(tree_part)
+                .unwrap()
+                .0,
+            opaque
+        );
+    }
+
+    #[test]
+    fn obstruction_test_only_matches_objects_near_the_camera_player_segment() {
+        let camera = Vec3::new(0.0, 0.0, 12.0);
+        let player = Vec3::ZERO;
+        assert!(obstructs_view(
+            Vec3::new(0.0, 0.0, 6.0),
+            0.9,
+            camera,
+            player
+        ));
+        assert!(!obstructs_view(
+            Vec3::new(3.0, 0.0, 6.0),
+            0.9,
+            camera,
+            player
+        ));
+        assert!(!obstructs_view(
+            Vec3::new(0.0, 0.0, 14.0),
+            0.9,
+            camera,
+            player
+        ));
+        assert!(!obstructs_view(
+            Vec3::new(0.0, 0.0, 0.0),
+            0.9,
+            camera,
+            player
+        ));
+        assert!(!obstructs_view(Vec3::ZERO, 0.9, camera, camera));
+    }
 
     #[test]
     fn camera_pivot_up_tracks_player_surface_orientation_at_multiple_latitudes() {

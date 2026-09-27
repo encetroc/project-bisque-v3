@@ -2,6 +2,7 @@
 
 use bevy::prelude::*;
 
+use crate::camera_follow::CameraObstructionFade;
 use crate::surface_transform::{SurfaceLocation, surface_transform};
 use crate::{
     interaction::{Interactable, InteractionRequested},
@@ -11,6 +12,8 @@ use crate::{
         TileCoordinate, authored_planet_tile, sample_tile_surface,
     },
 };
+
+const OBSTRUCTION_FADE_ALPHA: f32 = 0.3;
 
 /// Stable authored description of a single resource node.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -200,6 +203,8 @@ struct ResourceNodeVisuals {
     pale_clay: Handle<StandardMaterial>,
     wood: Handle<StandardMaterial>,
     leaves: Handle<StandardMaterial>,
+    faded_wood: Handle<StandardMaterial>,
+    faded_leaves: Handle<StandardMaterial>,
     mineral: Handle<StandardMaterial>,
     plant: Handle<StandardMaterial>,
     shell: Handle<StandardMaterial>,
@@ -219,6 +224,16 @@ impl ResourceNodeVisuals {
             pale_clay: materials.add(Color::srgb(0.78, 0.68, 0.48)),
             wood: materials.add(Color::srgb(0.36, 0.20, 0.10)),
             leaves: materials.add(Color::srgb(0.19, 0.48, 0.18)),
+            faded_wood: materials.add(StandardMaterial {
+                base_color: Color::srgba(0.36, 0.20, 0.10, OBSTRUCTION_FADE_ALPHA),
+                alpha_mode: AlphaMode::Blend,
+                ..default()
+            }),
+            faded_leaves: materials.add(StandardMaterial {
+                base_color: Color::srgba(0.19, 0.48, 0.18, OBSTRUCTION_FADE_ALPHA),
+                alpha_mode: AlphaMode::Blend,
+                ..default()
+            }),
             mineral: materials.add(Color::srgb(0.40, 0.43, 0.46)),
             plant: materials.add(Color::srgb(0.25, 0.62, 0.24)),
             shell: materials.add(Color::srgb(0.92, 0.76, 0.61)),
@@ -232,19 +247,23 @@ impl ResourceNodeVisuals {
             ResourceType::RedClay => self.spawn_clay(children, &self.red_clay),
             ResourceType::PaleClay => self.spawn_clay(children, &self.pale_clay),
             ResourceType::Wood => {
-                self.part(
+                self.part_fadeable(
                     children,
                     &self.trunk_mesh,
                     &self.wood,
+                    &self.faded_wood,
                     Vec3::Y * 0.46,
                     Vec3::ONE,
+                    0.55,
                 );
-                self.part(
+                self.part_fadeable(
                     children,
                     &self.sphere_mesh,
                     &self.leaves,
+                    &self.faded_leaves,
                     Vec3::Y * 1.05,
                     Vec3::splat(1.8),
+                    1.0,
                 );
             }
             ResourceType::IronMineral => {
@@ -294,6 +313,32 @@ impl ResourceNodeVisuals {
         ] {
             self.part(children, mesh, material, position, scale);
         }
+    }
+
+    fn part_fadeable(
+        &self,
+        children: &mut ChildSpawnerCommands,
+        mesh: &Handle<Mesh>,
+        opaque_material: &Handle<StandardMaterial>,
+        faded_material: &Handle<StandardMaterial>,
+        translation: Vec3,
+        scale: Vec3,
+        radius: f32,
+    ) {
+        children.spawn((
+            Mesh3d(mesh.clone()),
+            MeshMaterial3d(opaque_material.clone()),
+            CameraObstructionFade {
+                opaque_material: opaque_material.clone(),
+                faded_material: faded_material.clone(),
+                radius,
+            },
+            Transform {
+                translation,
+                scale,
+                ..default()
+            },
+        ));
     }
 
     fn part(
@@ -483,6 +528,22 @@ mod tests {
                     .mul_vec3(Vec3::Y)
                     .dot(transform.translation.normalize())
                     > 0.999
+        }));
+
+        let fadeable_data = {
+            let mut fadeables = world.query::<&CameraObstructionFade>();
+            fadeables
+                .iter(world)
+                .map(|fadeable| (fadeable.faded_material.clone(), fadeable.radius))
+                .collect::<Vec<_>>()
+        };
+        assert!(!fadeable_data.is_empty());
+        let materials = world.resource::<Assets<StandardMaterial>>();
+        assert!(fadeable_data.iter().all(|(handle, radius)| {
+            let material = materials.get(handle).unwrap();
+            *radius > 0.0
+                && material.alpha_mode == AlphaMode::Blend
+                && (material.base_color.alpha() - OBSTRUCTION_FADE_ALPHA).abs() < f32::EPSILON
         }));
     }
 }
