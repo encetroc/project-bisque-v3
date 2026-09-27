@@ -1,6 +1,6 @@
-//! Low-resolution rendered surface for the six logical planet faces.
+//! Low-resolution rendered surface and geometry-debug scene for the six logical planet faces.
 
-use bevy::{mesh::Indices, prelude::*};
+use bevy::{asset::RenderAssetUsages, mesh::PrimitiveTopology, prelude::*};
 
 use crate::planet::{
     DEFAULT_PLANET_RADIUS, PlanetFace, PlanetTile, TILES_PER_FACE, TileCoordinate,
@@ -20,6 +20,10 @@ const FACE_DEBUG_COLORS: [Color; 6] = [
     Color::srgb(0.16, 0.82, 0.82),
 ];
 const SURFACE_COLOR: Color = Color::srgb(0.34, 0.58, 0.30);
+const TILE_LINE_COLOR: Color = Color::srgb(0.025, 0.025, 0.025);
+const NORMAL_LINE_COLOR: Color = Color::srgb(1.0, 0.95, 0.25);
+const ORBIT_SPEED: f32 = 1.5;
+const ZOOM_SPEED: f32 = 35.0;
 
 /// CPU-side mesh data with face identity retained for inspection and tests.
 #[derive(Debug, Clone)]
@@ -82,12 +86,12 @@ impl PlanetFaceMesh {
     /// Convert the generated data into a Bevy triangle-list mesh.
     pub fn into_mesh(self) -> Mesh {
         let mut mesh = Mesh::new(
-            bevy::mesh::PrimitiveTopology::TriangleList,
-            bevy::asset::RenderAssetUsages::default(),
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
         );
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, self.positions);
         mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, self.normals);
-        mesh.insert_indices(Indices::U32(self.indices));
+        mesh.insert_indices(bevy::mesh::Indices::U32(self.indices));
         mesh
     }
 }
@@ -99,23 +103,59 @@ pub struct PlanetFaceDebugColor(pub Color);
 #[derive(Component, Debug, Clone)]
 pub struct PlanetFaceTiles(pub Vec<PlanetTile>);
 
+/// Current visibility of the three planet geometry diagnostics.
 #[derive(Resource, Debug, Clone, Copy)]
-pub struct PlanetFaceDebugMode(pub bool);
+pub struct PlanetDebugMode {
+    pub face_colors: bool,
+    pub tile_boundaries: bool,
+    pub surface_normals: bool,
+}
 
-impl Default for PlanetFaceDebugMode {
+impl Default for PlanetDebugMode {
     fn default() -> Self {
-        Self(true)
+        Self {
+            face_colors: true,
+            tile_boundaries: false,
+            surface_normals: false,
+        }
     }
 }
 
-/// Installs one immediately available planet scene and its face-color toggle.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+enum PlanetOverlay {
+    TileBoundaries,
+    SurfaceNormals,
+}
+
+#[derive(Component)]
+struct PlanetTestCamera;
+
+#[derive(Resource)]
+struct PlanetCameraOrbit {
+    yaw: f32,
+    pitch: f32,
+    distance: f32,
+}
+
+impl Default for PlanetCameraOrbit {
+    fn default() -> Self {
+        Self {
+            yaw: 0.55,
+            pitch: 0.38,
+            distance: 105.0,
+        }
+    }
+}
+
+/// Installs a geometry-only planet test scene, diagnostics, and an orbit camera.
 pub struct PlanetSurfacePlugin;
 
 impl Plugin for PlanetSurfacePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<PlanetFaceDebugMode>()
+        app.init_resource::<PlanetDebugMode>()
+            .init_resource::<PlanetCameraOrbit>()
             .add_systems(Startup, spawn_planet_surface)
-            .add_systems(Update, toggle_face_debug_colors);
+            .add_systems(Update, (toggle_planet_debug, orbit_planet_camera));
     }
 }
 
@@ -123,6 +163,8 @@ fn spawn_planet_surface(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mode: Res<PlanetDebugMode>,
+    orbit: Res<PlanetCameraOrbit>,
 ) {
     for (index, face) in PlanetFace::ALL.into_iter().enumerate() {
         let debug_color = FACE_DEBUG_COLORS[index];
@@ -141,11 +183,64 @@ fn spawn_planet_surface(
             PlanetFaceDebugColor(debug_color),
             PlanetFaceTiles(tiles),
         ));
+
+        let boundary_mesh = meshes.add(line_mesh(tile_boundary_lines(
+            face,
+            DEFAULT_PLANET_RADIUS * 1.001,
+        )));
+        let boundary_material = materials.add(StandardMaterial {
+            base_color: TILE_LINE_COLOR,
+            unlit: true,
+            cull_mode: None,
+            ..default()
+        });
+        commands.spawn((
+            Name::new(format!("Planet tile boundaries {face:?}")),
+            Mesh3d(boundary_mesh),
+            MeshMaterial3d(boundary_material),
+            PlanetOverlay::TileBoundaries,
+            visibility(mode.tile_boundaries),
+        ));
+
+        let normal_mesh = meshes.add(line_mesh(surface_normal_lines(face, DEFAULT_PLANET_RADIUS)));
+        let normal_material = materials.add(StandardMaterial {
+            base_color: NORMAL_LINE_COLOR,
+            unlit: true,
+            cull_mode: None,
+            ..default()
+        });
+        commands.spawn((
+            Name::new(format!("Planet surface normals {face:?}")),
+            Mesh3d(normal_mesh),
+            MeshMaterial3d(normal_material),
+            PlanetOverlay::SurfaceNormals,
+            visibility(mode.surface_normals),
+        ));
     }
 
+    // The neutral capsule marks the starting surface location without requiring gameplay.
     commands.spawn((
+        Name::new("Planet test player placeholder"),
+        Mesh3d(meshes.add(Capsule3d::new(0.65, 2.0))),
+        MeshMaterial3d(materials.add(Color::srgb(0.95, 0.82, 0.62))),
+        Transform::from_xyz(0.0, DEFAULT_PLANET_RADIUS + 1.6, 0.0),
+    ));
+
+    commands.spawn((
+        Name::new("Planet test orbit camera"),
         Camera3d::default(),
-        Transform::from_xyz(0.0, 65.0, 95.0).looking_at(Vec3::ZERO, Vec3::Y),
+        PlanetTestCamera,
+        orbit_transform(&orbit),
+    ));
+    commands.spawn((
+        Name::new("Planet test controls"),
+        Text::new("Planet geometry test  |  F: face colors  T: tile boundaries  N: normals  |  Arrow keys: orbit  +/-: zoom  Home: reset"),
+        Node {
+            position_type: PositionType::Absolute,
+            top: px(12),
+            left: px(12),
+            ..default()
+        },
     ));
     commands.spawn((
         DirectionalLight::default(),
@@ -153,21 +248,129 @@ fn spawn_planet_surface(
     ));
 }
 
-fn toggle_face_debug_colors(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    mut mode: ResMut<PlanetFaceDebugMode>,
-    faces: Query<(&PlanetFaceDebugColor, &MeshMaterial3d<StandardMaterial>)>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    if !keyboard.just_pressed(KeyCode::KeyF) {
-        return;
-    }
-    mode.0 = !mode.0;
-    for (debug, material_handle) in &faces {
-        if let Some(mut material) = materials.get_mut(&material_handle.0) {
-            material.base_color = if mode.0 { debug.0 } else { SURFACE_COLOR };
+fn tile_boundary_lines(face: PlanetFace, radius: f32) -> Vec<Vec3> {
+    let edge = TILES_PER_FACE as usize;
+    let mut vertices = Vec::with_capacity(edge * (edge + 1) * 4);
+    for grid in 0..=edge {
+        let coord = grid as f32 / edge as f32 * 2.0 - 1.0;
+        for step in 0..edge {
+            let start = step as f32 / edge as f32 * 2.0 - 1.0;
+            let end = (step + 1) as f32 / edge as f32 * 2.0 - 1.0;
+            vertices.push(project_face_to_sphere(face, start, coord, radius).unwrap());
+            vertices.push(project_face_to_sphere(face, end, coord, radius).unwrap());
+            vertices.push(project_face_to_sphere(face, coord, start, radius).unwrap());
+            vertices.push(project_face_to_sphere(face, coord, end, radius).unwrap());
         }
     }
+    vertices
+}
+
+fn surface_normal_lines(face: PlanetFace, radius: f32) -> Vec<Vec3> {
+    let edge = TILES_PER_FACE as usize;
+    let mut vertices = Vec::with_capacity(edge * edge * 2);
+    for y in 0..edge {
+        for x in 0..edge {
+            let u = (x as f32 + 0.5) / edge as f32 * 2.0 - 1.0;
+            let v = (y as f32 + 0.5) / edge as f32 * 2.0 - 1.0;
+            let normal = project_face_to_sphere(face, u, v, 1.0).unwrap();
+            vertices.push(normal * (radius + 0.08));
+            vertices.push(normal * (radius + 1.8));
+        }
+    }
+    vertices
+}
+
+fn line_mesh(vertices: Vec<Vec3>) -> Mesh {
+    Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::default())
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, vertices)
+}
+
+fn visibility(visible: bool) -> Visibility {
+    if visible {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    }
+}
+
+fn toggle_planet_debug(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut mode: ResMut<PlanetDebugMode>,
+    faces: Query<(&PlanetFaceDebugColor, &MeshMaterial3d<StandardMaterial>)>,
+    mut overlays: Query<(&PlanetOverlay, &mut Visibility)>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    if keyboard.just_pressed(KeyCode::KeyF) {
+        mode.face_colors = !mode.face_colors;
+        for (debug, material_handle) in &faces {
+            if let Some(mut material) = materials.get_mut(&material_handle.0) {
+                material.base_color = if mode.face_colors {
+                    debug.0
+                } else {
+                    SURFACE_COLOR
+                };
+            }
+        }
+    }
+    if keyboard.just_pressed(KeyCode::KeyT) {
+        mode.tile_boundaries = !mode.tile_boundaries;
+        for (overlay, mut visible) in &mut overlays {
+            if *overlay == PlanetOverlay::TileBoundaries {
+                *visible = visibility(mode.tile_boundaries);
+            }
+        }
+    }
+    if keyboard.just_pressed(KeyCode::KeyN) {
+        mode.surface_normals = !mode.surface_normals;
+        for (overlay, mut visible) in &mut overlays {
+            if *overlay == PlanetOverlay::SurfaceNormals {
+                *visible = visibility(mode.surface_normals);
+            }
+        }
+    }
+}
+
+fn orbit_planet_camera(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
+    mut orbit: ResMut<PlanetCameraOrbit>,
+    mut camera: Query<&mut Transform, With<PlanetTestCamera>>,
+) {
+    let delta = time.delta_secs();
+    if keyboard.pressed(KeyCode::ArrowLeft) {
+        orbit.yaw -= ORBIT_SPEED * delta;
+    }
+    if keyboard.pressed(KeyCode::ArrowRight) {
+        orbit.yaw += ORBIT_SPEED * delta;
+    }
+    if keyboard.pressed(KeyCode::ArrowUp) {
+        orbit.pitch = (orbit.pitch + ORBIT_SPEED * delta).min(1.48);
+    }
+    if keyboard.pressed(KeyCode::ArrowDown) {
+        orbit.pitch = (orbit.pitch - ORBIT_SPEED * delta).max(-1.48);
+    }
+    if keyboard.pressed(KeyCode::Equal) || keyboard.pressed(KeyCode::NumpadAdd) {
+        orbit.distance = (orbit.distance - ZOOM_SPEED * delta).max(55.0);
+    }
+    if keyboard.pressed(KeyCode::Minus) || keyboard.pressed(KeyCode::NumpadSubtract) {
+        orbit.distance = (orbit.distance + ZOOM_SPEED * delta).min(180.0);
+    }
+    if keyboard.just_pressed(KeyCode::Home) {
+        *orbit = PlanetCameraOrbit::default();
+    }
+    if let Ok(mut transform) = camera.single_mut() {
+        *transform = orbit_transform(&orbit);
+    }
+}
+
+fn orbit_transform(orbit: &PlanetCameraOrbit) -> Transform {
+    let horizontal = orbit.distance * orbit.pitch.cos();
+    let position = Vec3::new(
+        horizontal * orbit.yaw.sin(),
+        orbit.distance * orbit.pitch.sin(),
+        horizontal * orbit.yaw.cos(),
+    );
+    Transform::from_translation(position).looking_at(Vec3::ZERO, Vec3::Y)
 }
 
 #[cfg(test)]
@@ -207,10 +410,12 @@ mod tests {
     }
 
     #[test]
-    fn headless_scene_spawns_all_six_face_meshes_without_loading_states() {
+    fn headless_scene_spawns_all_faces_player_and_debug_overlays() {
         let mut app = App::new();
         app.insert_resource(Assets::<Mesh>::default());
         app.insert_resource(Assets::<StandardMaterial>::default());
+        app.init_resource::<PlanetDebugMode>();
+        app.init_resource::<PlanetCameraOrbit>();
         app.add_systems(Startup, spawn_planet_surface);
         app.update();
 
@@ -225,10 +430,72 @@ mod tests {
                 .sum::<usize>(),
             PLANET_TILE_COUNT
         );
+        let mut overlays = world.query::<(&PlanetOverlay, &Visibility)>();
+        let overlays: Vec<_> = overlays.iter(world).collect();
+        assert_eq!(overlays.len(), PlanetFace::ALL.len() * 2);
+        assert!(
+            overlays
+                .iter()
+                .all(|(_, visible)| **visible == Visibility::Hidden)
+        );
+        let mut player = world.query_filtered::<Entity, With<Name>>();
+        assert!(player.iter(world).any(|entity| {
+            world
+                .get::<Name>(entity)
+                .is_some_and(|name| name.as_str() == "Planet test player placeholder")
+        }));
     }
 
     #[test]
-    fn each_face_mesh_is_outward_wound_and_face_identity_is_distinct() {
+    fn debug_hotkeys_toggle_face_colors_tile_boundaries_and_normals() {
+        let mut app = App::new();
+        app.init_resource::<PlanetDebugMode>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .insert_resource(Assets::<StandardMaterial>::default())
+            .add_systems(Update, toggle_planet_debug);
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyT);
+        app.update();
+        assert!(app.world().resource::<PlanetDebugMode>().tile_boundaries);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyN);
+        app.update();
+        assert!(app.world().resource::<PlanetDebugMode>().surface_normals);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyF);
+        app.update();
+        assert!(!app.world().resource::<PlanetDebugMode>().face_colors);
+    }
+
+    #[test]
+    fn boundary_and_normal_overlays_are_complete_and_on_the_surface() {
+        for face in PlanetFace::ALL {
+            let boundaries = tile_boundary_lines(face, DEFAULT_PLANET_RADIUS * 1.001);
+            let normals = surface_normal_lines(face, DEFAULT_PLANET_RADIUS);
+            assert_eq!(boundaries.len(), 24 * 25 * 4);
+            assert!(boundaries.iter().all(|point| {
+                point.is_finite() && (point.length() - DEFAULT_PLANET_RADIUS * 1.001).abs() < 1e-4
+            }));
+            assert_eq!(normals.len(), 24 * 24 * 2);
+            assert!(normals.chunks_exact(2).all(|line| {
+                let direction = line[1] - line[0];
+                direction.length() > 1.7 && direction.normalize().dot(line[0].normalize()) > 0.999
+            }));
+        }
+    }
+
+    #[test]
+    fn every_face_mesh_is_outward_wound_and_face_identity_is_distinct() {
         for face in PlanetFace::ALL {
             let generated = PlanetFaceMesh::new(face, DEFAULT_PLANET_RADIUS);
             for triangle in generated.indices.chunks_exact(3) {
