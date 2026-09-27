@@ -23,6 +23,131 @@ pub enum SaleItem {
     Ceramic(CeramicObjectId),
 }
 
+/// One explicitly stocked basic material, including materials used by upgrades.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MerchantStockEntry {
+    pub resource: ResourceType,
+    pub quantity: u32,
+    pub unit_price: u64,
+}
+
+/// Finite, fixed merchant stock. Upgrade materials are ordinary stocked resources.
+#[derive(Resource, Debug, Clone, PartialEq, Eq)]
+pub struct MerchantStock {
+    pub entries: Vec<MerchantStockEntry>,
+}
+
+impl Default for MerchantStock {
+    fn default() -> Self {
+        Self {
+            entries: vec![
+                MerchantStockEntry {
+                    resource: ResourceType::CommonClay,
+                    quantity: 20,
+                    unit_price: 4,
+                },
+                MerchantStockEntry {
+                    resource: ResourceType::RedClay,
+                    quantity: 20,
+                    unit_price: 6,
+                },
+                MerchantStockEntry {
+                    resource: ResourceType::PaleClay,
+                    quantity: 20,
+                    unit_price: 6,
+                },
+                MerchantStockEntry {
+                    resource: ResourceType::Wood,
+                    quantity: 20,
+                    unit_price: 4,
+                },
+                MerchantStockEntry {
+                    resource: ResourceType::Plant,
+                    quantity: 20,
+                    unit_price: 2,
+                },
+                MerchantStockEntry {
+                    resource: ResourceType::IronMineral,
+                    quantity: 20,
+                    unit_price: 10,
+                },
+                MerchantStockEntry {
+                    resource: ResourceType::Shell,
+                    quantity: 20,
+                    unit_price: 4,
+                },
+                MerchantStockEntry {
+                    resource: ResourceType::Sand,
+                    quantity: 20,
+                    unit_price: 2,
+                },
+            ],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PurchaseError {
+    NotStocked,
+    InvalidQuantity,
+    InsufficientStock,
+    InsufficientCoins,
+    InsufficientInventorySpace,
+    CostOverflow,
+}
+
+/// Buy an exact quantity of a stocked resource, committing stock, wallet, and
+/// inventory together only after every precondition has been validated.
+pub fn purchase_from_merchant(
+    stock: &mut MerchantStock,
+    inventory: &mut Inventory,
+    wallet: &mut Wallet,
+    resource: ResourceType,
+    quantity: u32,
+) -> Result<u64, PurchaseError> {
+    if quantity == 0 {
+        return Err(PurchaseError::InvalidQuantity);
+    }
+    let Some(entry) = stock
+        .entries
+        .iter()
+        .find(|entry| entry.resource == resource)
+    else {
+        return Err(PurchaseError::NotStocked);
+    };
+    if entry.quantity < quantity {
+        return Err(PurchaseError::InsufficientStock);
+    }
+    let cost = entry
+        .unit_price
+        .checked_mul(u64::from(quantity))
+        .ok_or(PurchaseError::CostOverflow)?;
+    if wallet.coins < cost {
+        return Err(PurchaseError::InsufficientCoins);
+    }
+    let mut updated_inventory = inventory.clone();
+    if updated_inventory.add_resource(resource, quantity) != 0 {
+        return Err(PurchaseError::InsufficientInventorySpace);
+    }
+
+    let entry = stock
+        .entries
+        .iter_mut()
+        .find(|entry| entry.resource == resource)
+        .expect("the stocked resource was validated above");
+    entry.quantity -= quantity;
+    *inventory = updated_inventory;
+    wallet.coins -= cost;
+    Ok(cost)
+}
+
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PurchaseItemRequested {
+    pub merchant: Entity,
+    pub resource: ResourceType,
+    pub quantity: u32,
+}
+
 /// Fixed unit prices. Ceramics have a fixed price by form; their material and glaze
 /// do not change the price. Only fired ceramics are eligible for sale.
 pub const fn resource_price(resource: ResourceType) -> u64 {
@@ -115,8 +240,30 @@ pub struct EconomyPlugin;
 impl Plugin for EconomyPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Wallet>()
+            .init_resource::<MerchantStock>()
             .add_message::<SellItemRequested>()
-            .add_systems(Update, handle_sale_requests);
+            .add_message::<PurchaseItemRequested>()
+            .add_systems(Update, (handle_sale_requests, handle_purchase_requests));
+    }
+}
+
+fn handle_purchase_requests(
+    mut requests: MessageReader<PurchaseItemRequested>,
+    merchants: Query<(), With<Merchant>>,
+    mut stock: ResMut<MerchantStock>,
+    mut inventory: ResMut<Inventory>,
+    mut wallet: ResMut<Wallet>,
+) {
+    for request in requests.read() {
+        if merchants.get(request.merchant).is_ok() {
+            let _ = purchase_from_merchant(
+                &mut stock,
+                &mut inventory,
+                &mut wallet,
+                request.resource,
+                request.quantity,
+            );
+        }
     }
 }
 
@@ -152,6 +299,137 @@ mod tests {
             state,
         }
         .instantiate(CeramicObjectId(id))
+    }
+
+    fn stock_with(resource: ResourceType, quantity: u32, unit_price: u64) -> MerchantStock {
+        MerchantStock {
+            entries: vec![MerchantStockEntry {
+                resource,
+                quantity,
+                unit_price,
+            }],
+        }
+    }
+
+    #[test]
+    fn merchant_catalog_is_explicit_finite_fixed_price_stock_for_basic_materials() {
+        let stock = MerchantStock::default();
+        let expected = [
+            ResourceType::CommonClay,
+            ResourceType::RedClay,
+            ResourceType::PaleClay,
+            ResourceType::Wood,
+            ResourceType::Plant,
+            ResourceType::IronMineral,
+            ResourceType::Shell,
+            ResourceType::Sand,
+        ];
+        assert_eq!(stock.entries.len(), expected.len());
+        for resource in expected {
+            let entry = stock
+                .entries
+                .iter()
+                .find(|entry| entry.resource == resource)
+                .unwrap();
+            assert_eq!(entry.quantity, 20);
+            assert!(entry.unit_price > resource_price(resource));
+        }
+    }
+
+    #[test]
+    fn valid_purchase_charges_fixed_price_and_transfers_material_and_stock() {
+        let mut stock = stock_with(ResourceType::IronMineral, 3, 10);
+        let mut inventory = Inventory::default();
+        let mut wallet = Wallet { coins: 35 };
+        assert_eq!(
+            purchase_from_merchant(
+                &mut stock,
+                &mut inventory,
+                &mut wallet,
+                ResourceType::IronMineral,
+                3
+            ),
+            Ok(30)
+        );
+        assert_eq!(wallet.coins, 5);
+        assert_eq!(inventory.resource_count(ResourceType::IronMineral), 3);
+        assert_eq!(stock.entries[0].quantity, 0);
+    }
+
+    #[test]
+    fn failed_purchase_for_coins_or_inventory_space_is_atomic() {
+        let mut stock = stock_with(ResourceType::Wood, 10, 4);
+        let mut inventory = Inventory::default();
+        let mut wallet = Wallet { coins: 7 };
+        assert_eq!(
+            purchase_from_merchant(
+                &mut stock,
+                &mut inventory,
+                &mut wallet,
+                ResourceType::Wood,
+                2
+            ),
+            Err(PurchaseError::InsufficientCoins)
+        );
+        assert_eq!(wallet.coins, 7);
+        assert_eq!(inventory.resource_count(ResourceType::Wood), 0);
+        assert_eq!(stock.entries[0].quantity, 10);
+
+        inventory.add_resource(ResourceType::CommonClay, 99 * 20);
+        wallet.coins = 100;
+        assert_eq!(
+            purchase_from_merchant(
+                &mut stock,
+                &mut inventory,
+                &mut wallet,
+                ResourceType::Wood,
+                1
+            ),
+            Err(PurchaseError::InsufficientInventorySpace)
+        );
+        assert_eq!(wallet.coins, 100);
+        assert_eq!(inventory.resource_count(ResourceType::Wood), 0);
+        assert_eq!(stock.entries[0].quantity, 10);
+    }
+
+    #[test]
+    fn purchase_rejects_out_of_stock_unlisted_and_zero_quantity_requests() {
+        let mut stock = stock_with(ResourceType::Sand, 2, 2);
+        let mut inventory = Inventory::default();
+        let mut wallet = Wallet { coins: 100 };
+        assert_eq!(
+            purchase_from_merchant(
+                &mut stock,
+                &mut inventory,
+                &mut wallet,
+                ResourceType::Sand,
+                3
+            ),
+            Err(PurchaseError::InsufficientStock)
+        );
+        assert_eq!(
+            purchase_from_merchant(
+                &mut stock,
+                &mut inventory,
+                &mut wallet,
+                ResourceType::IronMineral,
+                1
+            ),
+            Err(PurchaseError::NotStocked)
+        );
+        assert_eq!(
+            purchase_from_merchant(
+                &mut stock,
+                &mut inventory,
+                &mut wallet,
+                ResourceType::Sand,
+                0
+            ),
+            Err(PurchaseError::InvalidQuantity)
+        );
+        assert_eq!(wallet.coins, 100);
+        assert_eq!(inventory.resource_count(ResourceType::Sand), 0);
+        assert_eq!(stock.entries[0].quantity, 2);
     }
 
     #[test]
@@ -271,6 +549,39 @@ mod tests {
         );
         assert_eq!(inventory.resource_count(ResourceType::IronMineral), 1);
         assert_eq!(wallet.coins, u64::MAX);
+    }
+
+    #[test]
+    fn purchase_requests_only_process_for_merchant_entities() {
+        let mut app = App::new();
+        app.add_plugins(EconomyPlugin)
+            .init_resource::<Inventory>()
+            .init_resource::<CraftedCeramics>();
+        let merchant = app.world_mut().spawn(Merchant).id();
+        let non_merchant = app.world_mut().spawn_empty().id();
+        app.world_mut().resource_mut::<Wallet>().coins = 100;
+        app.world_mut().write_message(PurchaseItemRequested {
+            merchant: non_merchant,
+            resource: ResourceType::CommonClay,
+            quantity: 1,
+        });
+        app.world_mut().write_message(PurchaseItemRequested {
+            merchant,
+            resource: ResourceType::CommonClay,
+            quantity: 1,
+        });
+        app.update();
+        assert_eq!(app.world().resource::<Wallet>().coins, 96);
+        assert_eq!(
+            app.world()
+                .resource::<Inventory>()
+                .resource_count(ResourceType::CommonClay),
+            1
+        );
+        assert_eq!(
+            app.world().resource::<MerchantStock>().entries[0].quantity,
+            19
+        );
     }
 
     #[test]
