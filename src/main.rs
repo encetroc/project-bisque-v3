@@ -9,6 +9,7 @@ pub mod game_clock;
 pub mod interaction;
 pub mod inventory;
 pub mod kiln;
+pub mod npcs;
 pub mod placement;
 pub mod planet;
 pub mod planet_surface;
@@ -31,6 +32,7 @@ fn main() {
         .add_plugins(drying_rack::DryingRackPlugin)
         .add_plugins(kiln::KilnPlugin)
         .add_plugins(studio::StudioPlugin)
+        .add_plugins(npcs::NpcPlugin)
         .add_plugins(placement::PlacementPlugin)
         .add_plugins(player_movement::PlayerMovementPlugin)
         .add_plugins(camera_follow::SurfaceCameraFollowPlugin)
