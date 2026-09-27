@@ -3,8 +3,8 @@
 use bevy::{asset::RenderAssetUsages, mesh::PrimitiveTopology, prelude::*};
 
 use crate::planet::{
-    DEFAULT_PLANET_RADIUS, PlanetFace, PlanetTile, TILES_PER_FACE, TileCoordinate,
-    project_face_to_sphere, sample_tile_surface,
+    Biome, DEFAULT_PLANET_RADIUS, PlanetFace, PlanetTile, TILES_PER_FACE, TileCoordinate,
+    authored_planet_tile, project_face_to_sphere, sample_tile_surface,
 };
 use crate::player_movement::SurfacePlayer;
 use crate::surface_transform::{SurfaceLocation, surface_transform};
@@ -21,7 +21,12 @@ const FACE_DEBUG_COLORS: [Color; 6] = [
     Color::srgb(0.72, 0.28, 0.88),
     Color::srgb(0.16, 0.82, 0.82),
 ];
-const SURFACE_COLOR: Color = Color::srgb(0.34, 0.58, 0.30);
+const BIOME_COLORS: [Color; 4] = [
+    Color::srgb(0.30, 0.62, 0.25), // Meadow
+    Color::srgb(0.82, 0.28, 0.13), // Red Highlands
+    Color::srgb(0.83, 0.75, 0.55), // Walkable Coast
+    Color::srgb(0.12, 0.48, 0.78), // Deep water
+];
 const TILE_LINE_COLOR: Color = Color::srgb(0.025, 0.025, 0.025);
 const NORMAL_LINE_COLOR: Color = Color::srgb(1.0, 0.95, 0.25);
 
@@ -58,7 +63,7 @@ impl PlanetFaceMesh {
             for x in 0..edge {
                 let coordinate = TileCoordinate::new(face, x as u8, y as u8)
                     .expect("mesh grid coordinates are within the face");
-                tiles.push(PlanetTile::new(coordinate));
+                tiles.push(authored_planet_tile(coordinate));
                 let a = (y * (edge + 1) + x) as u32;
                 let b = a + 1;
                 let c = a + (edge + 1) as u32;
@@ -83,21 +88,44 @@ impl PlanetFaceMesh {
         }
     }
 
-    /// Convert the generated data into a Bevy triangle-list mesh.
-    pub fn into_mesh(self) -> Mesh {
-        let mut mesh = Mesh::new(
-            PrimitiveTopology::TriangleList,
-            RenderAssetUsages::default(),
-        );
-        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, self.positions);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, self.normals);
-        mesh.insert_indices(bevy::mesh::Indices::U32(self.indices));
-        mesh
+    /// Build one colored mesh per authored tile appearance, omitting empty groups.
+    fn into_biome_meshes(self) -> Vec<(Color, Mesh)> {
+        let mut grouped_indices: [Vec<u32>; 4] = std::array::from_fn(|_| Vec::new());
+        for (tile, tile_indices) in self.tiles.iter().zip(self.indices.chunks_exact(6)) {
+            let color_index = match (tile.biome, tile.deep_water) {
+                (_, true) => 3,
+                (Biome::Meadow, false) => 0,
+                (Biome::RedHighlands, false) => 1,
+                (Biome::Coast, false) => 2,
+            };
+            grouped_indices[color_index].extend_from_slice(tile_indices);
+        }
+
+        grouped_indices
+            .into_iter()
+            .zip(BIOME_COLORS)
+            .filter_map(|(indices, color)| {
+                if indices.is_empty() {
+                    return None;
+                }
+                let mut mesh = Mesh::new(
+                    PrimitiveTopology::TriangleList,
+                    RenderAssetUsages::default(),
+                );
+                mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, self.positions.clone());
+                mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, self.normals.clone());
+                mesh.insert_indices(bevy::mesh::Indices::U32(indices));
+                Some((color, mesh))
+            })
+            .collect()
     }
 }
 
 #[derive(Component, Debug, Clone, Copy)]
 pub struct PlanetFaceDebugColor(pub Color);
+
+#[derive(Component, Debug, Clone, Copy)]
+struct PlanetBiomeColor(Color);
 
 /// Logical tiles retained on the rendered face for gameplay/debug inspection.
 #[derive(Component, Debug, Clone)]
@@ -114,7 +142,7 @@ pub struct PlanetDebugMode {
 impl Default for PlanetDebugMode {
     fn default() -> Self {
         Self {
-            face_colors: true,
+            face_colors: false,
             tile_boundaries: false,
             surface_normals: false,
         }
@@ -148,19 +176,28 @@ fn spawn_planet_surface(
         let debug_color = FACE_DEBUG_COLORS[index];
         let generated = PlanetFaceMesh::new(face, DEFAULT_PLANET_RADIUS);
         let tiles = generated.tiles.clone();
-        let mesh = meshes.add(generated.into_mesh());
-        let material = materials.add(StandardMaterial {
-            base_color: debug_color,
-            cull_mode: None,
-            ..default()
-        });
-        commands.spawn((
-            Name::new(format!("Planet face {face:?}")),
-            Mesh3d(mesh),
-            MeshMaterial3d(material),
-            PlanetFaceDebugColor(debug_color),
-            PlanetFaceTiles(tiles),
-        ));
+        let face_entity = commands
+            .spawn((
+                Name::new(format!("Planet face {face:?}")),
+                PlanetFaceTiles(tiles),
+            ))
+            .id();
+        for (group, (biome_color, mesh)) in generated.into_biome_meshes().into_iter().enumerate() {
+            let material = materials.add(StandardMaterial {
+                base_color: biome_color,
+                cull_mode: None,
+                ..default()
+            });
+            commands.entity(face_entity).with_children(|children| {
+                children.spawn((
+                    Name::new(format!("Planet face {face:?} biome surface {group}")),
+                    Mesh3d(meshes.add(mesh)),
+                    MeshMaterial3d(material),
+                    PlanetFaceDebugColor(debug_color),
+                    PlanetBiomeColor(biome_color),
+                ));
+            });
+        }
 
         let boundary_mesh = meshes.add(line_mesh(tile_boundary_lines(
             face,
@@ -288,19 +325,19 @@ fn visibility(visible: bool) -> Visibility {
 fn toggle_planet_debug(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut mode: ResMut<PlanetDebugMode>,
-    faces: Query<(&PlanetFaceDebugColor, &MeshMaterial3d<StandardMaterial>)>,
+    faces: Query<(
+        &PlanetFaceDebugColor,
+        &PlanetBiomeColor,
+        &MeshMaterial3d<StandardMaterial>,
+    )>,
     mut overlays: Query<(&PlanetOverlay, &mut Visibility)>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     if keyboard.just_pressed(KeyCode::KeyF) {
         mode.face_colors = !mode.face_colors;
-        for (debug, material_handle) in &faces {
+        for (debug, biome, material_handle) in &faces {
             if let Some(mut material) = materials.get_mut(&material_handle.0) {
-                material.base_color = if mode.face_colors {
-                    debug.0
-                } else {
-                    SURFACE_COLOR
-                };
+                material.base_color = if mode.face_colors { debug.0 } else { biome.0 };
             }
         }
     }
@@ -368,15 +405,22 @@ mod tests {
         app.update();
 
         let world = app.world_mut();
-        let mut faces = world.query::<(&Mesh3d, &PlanetFaceTiles, &PlanetFaceDebugColor)>();
+        let mut faces = world.query::<&PlanetFaceTiles>();
         let spawned: Vec<_> = faces.iter(world).collect();
         assert_eq!(spawned.len(), PlanetFace::ALL.len());
         assert_eq!(
-            spawned
-                .iter()
-                .map(|(_, tiles, _)| tiles.0.len())
-                .sum::<usize>(),
+            spawned.iter().map(|tiles| tiles.0.len()).sum::<usize>(),
             PLANET_TILE_COUNT
+        );
+        let mut rendered_biome_colors = world.query::<(&Mesh3d, &PlanetBiomeColor)>();
+        let rendered_biome_colors: Vec<_> = rendered_biome_colors
+            .iter(world)
+            .map(|(_, color)| color.0)
+            .collect();
+        assert!(
+            BIOME_COLORS
+                .iter()
+                .all(|color| rendered_biome_colors.contains(color))
         );
         let mut overlays = world.query::<(&PlanetOverlay, &Visibility)>();
         let overlays: Vec<_> = overlays.iter(world).collect();
@@ -422,7 +466,7 @@ mod tests {
             .resource_mut::<ButtonInput<KeyCode>>()
             .press(KeyCode::KeyF);
         app.update();
-        assert!(!app.world().resource::<PlanetDebugMode>().face_colors);
+        assert!(app.world().resource::<PlanetDebugMode>().face_colors);
     }
 
     #[test]

@@ -304,6 +304,8 @@ pub enum ResourceType {
 pub struct PlanetTile {
     pub coordinate: TileCoordinate,
     pub biome: Biome,
+    /// True only for authored ocean tiles, not walkable coastal land.
+    pub deep_water: bool,
     height: f32,
     pub resource_type: Option<ResourceType>,
 }
@@ -313,6 +315,7 @@ impl PlanetTile {
         Self {
             coordinate,
             biome: Biome::Meadow,
+            deep_water: false,
             height: 0.0,
             resource_type: None,
         }
@@ -332,6 +335,46 @@ impl PlanetTile {
         self.height = height.clamp(MIN_TERRAIN_HEIGHT, MAX_TERRAIN_HEIGHT);
         true
     }
+}
+
+/// Assign a stable authored region based on the tile's spherical position.
+/// The three region centers are the positive Y (studio meadow), positive X
+/// (red highlands), and positive Z (coast) directions. Nearest-center masks
+/// make each region continuous across cube-face boundaries.
+pub fn author_biome(coordinate: TileCoordinate) -> Biome {
+    let normal = tile_normal(coordinate);
+    let centers = [
+        (Biome::Meadow, Vec3::Y),
+        (Biome::RedHighlands, Vec3::X),
+        (Biome::Coast, Vec3::Z),
+    ];
+    centers
+        .into_iter()
+        .max_by(|(_, left), (_, right)| normal.dot(*left).total_cmp(&normal.dot(*right)))
+        .expect("the planet has three authored biome regions")
+        .0
+}
+
+/// Mark the innermost part of the coast as ocean while leaving its outer band
+/// as walkable pale shoreline. This mask is stable across face transitions.
+pub fn is_authored_deep_water(coordinate: TileCoordinate) -> bool {
+    author_biome(coordinate) == Biome::Coast && tile_normal(coordinate).dot(Vec3::Z) >= 0.86
+}
+
+fn tile_normal(coordinate: TileCoordinate) -> Vec3 {
+    let u = (coordinate.x() as f32 + 0.5) / TILES_PER_FACE as f32 * 2.0 - 1.0;
+    let v = (coordinate.y() as f32 + 0.5) / TILES_PER_FACE as f32 * 2.0 - 1.0;
+    cube_face_point(coordinate.face(), u, v)
+        .expect("validated tile coordinates map onto the cube face")
+        .normalize()
+}
+
+/// Build a tile populated with this planet's authored biome and water mask.
+pub fn authored_planet_tile(coordinate: TileCoordinate) -> PlanetTile {
+    let mut tile = PlanetTile::new(coordinate);
+    tile.biome = author_biome(coordinate);
+    tile.deep_water = is_authored_deep_water(coordinate);
+    tile
 }
 
 /// World-space sample of a tile-authored point on the planet surface.
@@ -355,9 +398,7 @@ pub fn sample_tile_surface(tile: &PlanetTile, radius: f32) -> Option<SurfaceSamp
     }
 
     let coordinate = tile.coordinate;
-    let u = (coordinate.x() as f32 + 0.5) / TILES_PER_FACE as f32 * 2.0 - 1.0;
-    let v = (coordinate.y() as f32 + 0.5) / TILES_PER_FACE as f32 * 2.0 - 1.0;
-    let normal = cube_face_point(coordinate.face(), u, v)?.normalize();
+    let normal = tile_normal(coordinate);
     let height = tile.height();
     let surface_radius = radius + height;
     if surface_radius <= 0.0 {
@@ -384,6 +425,52 @@ impl Default for PlanetTile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authored_planet_has_three_stable_regions_and_distinguishes_ocean_from_shore() {
+        let mut biome_counts = [0usize; 3];
+        let mut deep_water_count = 0;
+        let mut walkable_coast_count = 0;
+        for face in PlanetFace::ALL {
+            for y in 0..TILES_PER_FACE {
+                for x in 0..TILES_PER_FACE {
+                    let coordinate = TileCoordinate::new(face, x, y).unwrap();
+                    let tile = authored_planet_tile(coordinate);
+                    assert_eq!(tile.biome, author_biome(coordinate));
+                    assert_eq!(tile.deep_water, is_authored_deep_water(coordinate));
+                    match tile.biome {
+                        Biome::Meadow => biome_counts[0] += 1,
+                        Biome::RedHighlands => biome_counts[1] += 1,
+                        Biome::Coast => {
+                            biome_counts[2] += 1;
+                            if tile.deep_water {
+                                deep_water_count += 1;
+                            } else {
+                                walkable_coast_count += 1;
+                            }
+                        }
+                    }
+                    assert!(!tile.deep_water || tile.biome == Biome::Coast);
+                }
+            }
+        }
+
+        assert!(biome_counts.into_iter().all(|count| count > 0));
+        assert!(deep_water_count > 0);
+        assert!(walkable_coast_count > 0);
+        assert_eq!(
+            author_biome(TileCoordinate::new(PlanetFace::PositiveY, 11, 14).unwrap()),
+            Biome::Meadow
+        );
+        assert_eq!(
+            author_biome(TileCoordinate::new(PlanetFace::PositiveX, 11, 11).unwrap()),
+            Biome::RedHighlands
+        );
+        assert_eq!(
+            author_biome(TileCoordinate::new(PlanetFace::PositiveZ, 11, 11).unwrap()),
+            Biome::Coast
+        );
+    }
 
     #[test]
     fn cube_faces_project_to_requested_radius_with_finite_symmetric_results() {
@@ -478,6 +565,7 @@ mod tests {
         let mut tile = PlanetTile::new(coordinate);
         assert_eq!(tile.coordinate, coordinate);
         assert_eq!(tile.biome, Biome::Meadow);
+        assert!(!tile.deep_water);
         assert_eq!(tile.height(), 0.0);
         assert_eq!(tile.resource_type, None);
 
