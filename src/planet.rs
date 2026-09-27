@@ -134,7 +134,7 @@ pub enum Direction {
 }
 
 impl Direction {
-    const ALL: [Self; 4] = [Self::North, Self::East, Self::South, Self::West];
+    pub const ALL: [Self; 4] = [Self::North, Self::East, Self::South, Self::West];
 
     fn vector(self, face: PlanetFace) -> Vec3 {
         let (u, v) = face_basis(face);
