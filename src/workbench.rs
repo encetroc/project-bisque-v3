@@ -285,7 +285,7 @@ fn control_workbench(
         selection.form = CeramicForm::Cup;
     } else if keyboard.just_pressed(KeyCode::Digit2) {
         selection.form = CeramicForm::Bowl;
-    } else if keyboard.just_pressed(KeyCode::Digit3)
+    } else if keyboard.just_pressed(KeyCode::Digit6)
         && workbenches
             .single()
             .is_ok_and(|workbench| workbench.upgraded)
@@ -337,6 +337,7 @@ fn control_workbench(
 
 fn update_workbench_help(
     selection: Res<WorkbenchSelection>,
+    workbenches: Query<&Workbench>,
     feedback: Res<WorkbenchFeedback>,
     mut labels: Query<&mut Text, With<WorkbenchHelpText>>,
 ) {
@@ -346,8 +347,16 @@ fn update_workbench_help(
     let message = if !selection.active {
         String::new()
     } else {
+        let vase_option = if workbenches
+            .single()
+            .is_ok_and(|workbench| workbench.upgraded)
+        {
+            "6 Vase"
+        } else {
+            "6 Vase (locked)"
+        };
         format!(
-            "Workbench — 1 Cup / 2 Bowl / 3 Vase | U Upgrade (30 coins + 5 wood) | C Common / R Red / P Pale clay | 0 None / 3 Blue / 4 Green / 5 White glaze | Enter Craft | Esc Close\nSelected: {:?}, {:?} clay, {:?} glaze{}",
+            "Workbench — 1 Cup / 2 Bowl / {vase_option} | U Upgrade (30 coins + 5 wood) | C Common / R Red / P Pale clay | 0 None / 3 Blue / 4 Green / 5 White glaze | Enter Craft | Esc Close\nSelected: {:?}, {:?} clay, {:?} glaze{}",
             selection.form,
             selection.clay,
             selection.glaze,
@@ -503,6 +512,28 @@ mod tests {
         assert_eq!(selected.form, CeramicForm::Bowl);
         assert_eq!(selected.clay, ClayMaterial::Red);
         assert_eq!(selected.glaze, Glaze::Blue);
+    }
+
+    #[test]
+    fn vase_selection_is_available_after_workbench_upgrade() {
+        let mut app = App::new();
+        app.init_resource::<WorkbenchSelection>()
+            .init_resource::<Inventory>()
+            .init_resource::<CraftedCeramics>()
+            .init_resource::<WorkbenchFeedback>()
+            .init_resource::<Wallet>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .add_systems(Update, control_workbench);
+        app.world_mut().resource_mut::<WorkbenchSelection>().active = true;
+        app.world_mut().spawn(Workbench { upgraded: true });
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Digit6);
+        app.update();
+        assert_eq!(
+            app.world().resource::<WorkbenchSelection>().form,
+            CeramicForm::Vase
+        );
     }
 
     #[test]
