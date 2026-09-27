@@ -4,8 +4,12 @@ use bevy::prelude::*;
 
 use crate::{
     economy::Merchant,
+    game_clock::GameClock,
     interaction::Interactable,
-    planet::{DEFAULT_PLANET_RADIUS, PlanetFace, PlanetTile, TileCoordinate, sample_tile_surface},
+    planet::{
+        DEFAULT_PLANET_RADIUS, FaceOrientation, PlanetCoordinate, PlanetFace, PlanetTile,
+        TileCoordinate, sample_tile_surface,
+    },
     surface_transform::{SurfaceLocation, surface_transform},
 };
 
@@ -25,11 +29,38 @@ pub enum NpcProperty {
     GeneralStore,
 }
 
+/// A deterministic phase in an NPC's authored daily routine.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NpcScheduleState {
+    Home,
+    Travel,
+    Work,
+    Social,
+}
+
+/// Named authored locations used by NPC schedules and exposed for debugging.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NpcDestination {
+    Home,
+    Work,
+    Social,
+}
+
+/// Inspectable schedule snapshot attached to each NPC entity.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NpcScheduleDebug {
+    pub state: NpcScheduleState,
+    pub destination: NpcDestination,
+    /// Index into the active authored route (zero while stationary).
+    pub waypoint_index: usize,
+}
+
 pub struct NpcPlugin;
 
 impl Plugin for NpcPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_npc_world);
+        app.add_systems(Startup, spawn_npc_world)
+            .add_systems(Update, update_npc_schedules);
     }
 }
 
@@ -81,6 +112,217 @@ const NPCS: [NpcDefinition; 3] = [
     },
 ];
 
+const SOCIAL_TILE: (u8, u8) = (12, 16);
+
+#[derive(Clone, Copy)]
+struct SchedulePhase {
+    state: NpcScheduleState,
+    destination: NpcDestination,
+    route: [(u8, u8); 3],
+    route_len: usize,
+    start_minute: f64,
+    end_minute: f64,
+}
+
+fn schedule_phase(character: NpcCharacter, minute: f64) -> SchedulePhase {
+    let (home, work) = match character {
+        NpcCharacter::Baker => ((8, 12), (9, 12)),
+        NpcCharacter::Carpenter => ((11, 12), (12, 12)),
+        NpcCharacter::Merchant => ((14, 12), (15, 12)),
+    };
+    let social = SOCIAL_TILE;
+    let stationary = [(0, 0); 3];
+    let phases = [
+        SchedulePhase {
+            state: NpcScheduleState::Home,
+            destination: NpcDestination::Home,
+            route: stationary,
+            route_len: 0,
+            start_minute: 0.0,
+            end_minute: 8.0 * 60.0,
+        },
+        SchedulePhase {
+            state: NpcScheduleState::Travel,
+            destination: NpcDestination::Work,
+            route: [home, (8, 13), work],
+            route_len: 3,
+            start_minute: 8.0 * 60.0,
+            end_minute: 9.0 * 60.0,
+        },
+        SchedulePhase {
+            state: NpcScheduleState::Work,
+            destination: NpcDestination::Work,
+            route: stationary,
+            route_len: 0,
+            start_minute: 9.0 * 60.0,
+            end_minute: 12.0 * 60.0,
+        },
+        SchedulePhase {
+            state: NpcScheduleState::Travel,
+            destination: NpcDestination::Social,
+            route: [work, (10, 14), social],
+            route_len: 3,
+            start_minute: 12.0 * 60.0,
+            end_minute: 12.5 * 60.0,
+        },
+        SchedulePhase {
+            state: NpcScheduleState::Social,
+            destination: NpcDestination::Social,
+            route: stationary,
+            route_len: 0,
+            start_minute: 12.5 * 60.0,
+            end_minute: 13.5 * 60.0,
+        },
+        SchedulePhase {
+            state: NpcScheduleState::Travel,
+            destination: NpcDestination::Work,
+            route: [social, (13, 14), work],
+            route_len: 3,
+            start_minute: 13.5 * 60.0,
+            end_minute: 14.0 * 60.0,
+        },
+        SchedulePhase {
+            state: NpcScheduleState::Work,
+            destination: NpcDestination::Work,
+            route: stationary,
+            route_len: 0,
+            start_minute: 14.0 * 60.0,
+            end_minute: 18.0 * 60.0,
+        },
+        SchedulePhase {
+            state: NpcScheduleState::Travel,
+            destination: NpcDestination::Social,
+            route: [work, (13, 14), social],
+            route_len: 3,
+            start_minute: 18.0 * 60.0,
+            end_minute: 18.5 * 60.0,
+        },
+        SchedulePhase {
+            state: NpcScheduleState::Social,
+            destination: NpcDestination::Social,
+            route: stationary,
+            route_len: 0,
+            start_minute: 18.5 * 60.0,
+            end_minute: 19.5 * 60.0,
+        },
+        SchedulePhase {
+            state: NpcScheduleState::Travel,
+            destination: NpcDestination::Home,
+            route: [social, (10, 14), home],
+            route_len: 3,
+            start_minute: 19.5 * 60.0,
+            end_minute: 21.0 * 60.0,
+        },
+        SchedulePhase {
+            state: NpcScheduleState::Home,
+            destination: NpcDestination::Home,
+            route: stationary,
+            route_len: 0,
+            start_minute: 21.0 * 60.0,
+            end_minute: 24.0 * 60.0,
+        },
+    ];
+
+    phases
+        .into_iter()
+        .find(|phase| minute >= phase.start_minute && minute < phase.end_minute)
+        .unwrap_or(phases[0])
+}
+
+fn route_sample(
+    route: &[(u8, u8); 3],
+    route_len: usize,
+    progress: f32,
+) -> (crate::planet::SurfaceSample, usize) {
+    let coordinates: Vec<_> = route[..route_len]
+        .iter()
+        .map(|&(x, y)| {
+            let tile = TileCoordinate::new(PlanetFace::PositiveY, x, y)
+                .expect("authored NPC route tiles remain within the planet face");
+            let coordinate = PlanetCoordinate::new(tile, FaceOrientation::North);
+            let tile = PlanetTile::new(coordinate.tile);
+            (
+                coordinate,
+                sample_tile_surface(&tile, DEFAULT_PLANET_RADIUS)
+                    .expect("the configured planet radius is valid"),
+            )
+        })
+        .collect();
+    if coordinates.len() < 2 {
+        return (coordinates[0].1, 0);
+    }
+    let scaled = progress.clamp(0.0, 1.0) * (coordinates.len() - 1) as f32;
+    let index = (scaled.floor() as usize).min(coordinates.len() - 2);
+    let fraction = scaled - index as f32;
+    let (_, start_sample) = coordinates[index];
+    let (_, end_sample) = coordinates[index + 1];
+    let normal = start_sample
+        .normal
+        .lerp(end_sample.normal, fraction)
+        .normalize();
+    let height = coordinates[index]
+        .1
+        .height
+        .lerp(coordinates[index + 1].1.height, fraction);
+    (
+        crate::planet::SurfaceSample {
+            normal,
+            height,
+            position: normal * (DEFAULT_PLANET_RADIUS + height),
+        },
+        index + usize::from(fraction > 0.5),
+    )
+}
+
+fn update_npc_schedules(
+    clock: Res<GameClock>,
+    mut npcs: Query<(&NpcCharacter, &mut Transform, &mut NpcScheduleDebug)>,
+) {
+    let minute = clock.minute_of_day();
+    for (character, mut transform, mut debug) in &mut npcs {
+        let phase = schedule_phase(*character, minute);
+        let (sample, waypoint_index) = if phase.route_len == 0 {
+            let tile = match phase.destination {
+                NpcDestination::Home => match character {
+                    NpcCharacter::Baker => (8, 12),
+                    NpcCharacter::Carpenter => (11, 12),
+                    NpcCharacter::Merchant => (14, 12),
+                },
+                NpcDestination::Work => match character {
+                    NpcCharacter::Baker => (9, 12),
+                    NpcCharacter::Carpenter => (12, 12),
+                    NpcCharacter::Merchant => (15, 12),
+                },
+                NpcDestination::Social => SOCIAL_TILE,
+            };
+            route_sample(&[tile, tile, tile], 1, 0.0)
+        } else {
+            let progress =
+                ((minute - phase.start_minute) / (phase.end_minute - phase.start_minute)) as f32;
+            route_sample(&phase.route, phase.route_len, progress)
+        };
+        let direction = sample.normal;
+        if let Some(next_transform) = surface_transform(
+            SurfaceLocation::new(direction, 0.04),
+            Vec3::ZERO,
+            DEFAULT_PLANET_RADIUS,
+            &crate::planet::SurfaceSample {
+                height: sample.height,
+                normal: direction,
+                position: sample.position,
+            },
+            Vec3::X,
+        ) {
+            *transform = next_transform;
+        }
+        *debug = NpcScheduleDebug {
+            state: phase.state,
+            destination: phase.destination,
+            waypoint_index,
+        };
+    }
+}
+
 fn spawn_npc_world(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -107,6 +349,11 @@ fn spawn_npc_world(
                 character_transform,
                 Interactable::new(definition.interaction_prompt),
                 Visibility::default(),
+                NpcScheduleDebug {
+                    state: NpcScheduleState::Home,
+                    destination: NpcDestination::Home,
+                    waypoint_index: 0,
+                },
             ))
             .id();
         commands.entity(character).with_children(|children| {
@@ -210,28 +457,106 @@ mod tests {
     use super::*;
 
     #[test]
+    fn schedule_boundaries_are_deterministic_and_expose_expected_destinations() {
+        let cases = [
+            (0.0, NpcScheduleState::Home, NpcDestination::Home),
+            (8.0 * 60.0, NpcScheduleState::Travel, NpcDestination::Work),
+            (9.0 * 60.0, NpcScheduleState::Work, NpcDestination::Work),
+            (
+                12.0 * 60.0,
+                NpcScheduleState::Travel,
+                NpcDestination::Social,
+            ),
+            (
+                12.5 * 60.0,
+                NpcScheduleState::Social,
+                NpcDestination::Social,
+            ),
+            (13.5 * 60.0, NpcScheduleState::Travel, NpcDestination::Work),
+            (14.0 * 60.0, NpcScheduleState::Work, NpcDestination::Work),
+            (
+                18.0 * 60.0,
+                NpcScheduleState::Travel,
+                NpcDestination::Social,
+            ),
+            (
+                18.5 * 60.0,
+                NpcScheduleState::Social,
+                NpcDestination::Social,
+            ),
+            (19.5 * 60.0, NpcScheduleState::Travel, NpcDestination::Home),
+            (21.0 * 60.0, NpcScheduleState::Home, NpcDestination::Home),
+        ];
+        for character in [
+            NpcCharacter::Baker,
+            NpcCharacter::Carpenter,
+            NpcCharacter::Merchant,
+        ] {
+            for (minute, expected_state, expected_destination) in cases {
+                let schedule = schedule_phase(character, minute);
+                assert_eq!(schedule.state, expected_state);
+                assert_eq!(schedule.destination, expected_destination);
+                assert_eq!(schedule_phase(character, minute).state, schedule.state);
+            }
+        }
+    }
+
+    #[test]
+    fn authored_travel_waypoints_interpolate_on_sphere_and_cube_seam() {
+        let character = NpcCharacter::Baker;
+        let phase = schedule_phase(character, 8.0 * 60.0);
+        let (start, _) = route_sample(&phase.route, phase.route_len, 0.0);
+        let (middle, _) = route_sample(&phase.route, phase.route_len, 0.5);
+        let (end, _) = route_sample(&phase.route, phase.route_len, 1.0);
+        assert!((start.position.length() - DEFAULT_PLANET_RADIUS).abs() < 0.1);
+        assert!((end.position.length() - DEFAULT_PLANET_RADIUS).abs() < 0.1);
+        assert!(middle.normal.distance(start.normal) > 0.0);
+
+        let edge = TileCoordinate::new(PlanetFace::PositiveY, 23, 12).unwrap();
+        let across = crate::planet::move_coordinate(
+            PlanetCoordinate::new(edge, FaceOrientation::East),
+            crate::planet::Direction::East,
+        );
+        assert_ne!(across.tile.face(), edge.face());
+        let edge_sample =
+            sample_tile_surface(&PlanetTile::new(edge), DEFAULT_PLANET_RADIUS).unwrap();
+        let across_sample =
+            sample_tile_surface(&PlanetTile::new(across.tile), DEFAULT_PLANET_RADIUS).unwrap();
+        assert!(edge_sample.normal.distance(across_sample.normal) < 0.2);
+    }
+
+    #[test]
     fn headless_world_contains_exactly_three_interactable_surface_aligned_npcs_and_properties() {
         let mut app = App::new();
         app.insert_resource(Assets::<Mesh>::default());
         app.insert_resource(Assets::<StandardMaterial>::default());
+        app.insert_resource(GameClock::default());
         app.add_plugins(NpcPlugin);
         app.update();
 
         let world = app.world_mut();
-        let mut characters = world.query::<(&Name, &NpcCharacter, &Transform, &Interactable)>();
+        let mut characters = world.query::<(
+            &Name,
+            &NpcCharacter,
+            &Transform,
+            &Interactable,
+            &NpcScheduleDebug,
+        )>();
         let characters: Vec<_> = characters.iter(world).collect();
         assert_eq!(characters.len(), 3);
         for expected in ["Baker", "Carpenter", "Merchant"] {
             assert_eq!(
                 characters
                     .iter()
-                    .filter(|(name, _, _, _)| name.as_str() == expected)
+                    .filter(|(name, _, _, _, _)| name.as_str() == expected)
                     .count(),
                 1
             );
         }
-        for (_, _, transform, interactable) in characters {
+        for (_, _, transform, interactable, schedule) in characters {
             assert!(interactable.range > 0.0);
+            assert_eq!(schedule.state, NpcScheduleState::Home);
+            assert_eq!(schedule.destination, NpcDestination::Home);
             let up = transform.rotation * Vec3::Y;
             assert!(up.dot(transform.translation.normalize()) > 0.999);
         }
