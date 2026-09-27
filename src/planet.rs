@@ -12,6 +12,11 @@ pub const TILES_PER_FACE: u8 = 24;
 /// Starting planet radius recommended by the POC specification.
 pub const DEFAULT_PLANET_RADIUS: f32 = 40.0;
 
+/// Lowest permitted authored terrain height, in world units relative to radius.
+pub const MIN_TERRAIN_HEIGHT: f32 = -0.5;
+/// Highest permitted authored terrain height, in world units relative to radius.
+pub const MAX_TERRAIN_HEIGHT: f32 = 1.5;
+
 /// Convert face-local cube coordinates in `[-1, 1]` to a cube-surface point.
 ///
 /// Each face uses a fixed orientation so the same cube corner has the same
@@ -160,7 +165,7 @@ pub enum ResourceType {
 pub struct PlanetTile {
     pub coordinate: TileCoordinate,
     pub biome: Biome,
-    pub height: f32,
+    height: f32,
     pub resource_type: Option<ResourceType>,
 }
 
@@ -173,6 +178,58 @@ impl PlanetTile {
             resource_type: None,
         }
     }
+
+    /// Terrain height relative to the planet's base radius, in world units.
+    pub const fn height(&self) -> f32 {
+        self.height
+    }
+
+    /// Set authored terrain height, clamping finite values to the gentle range.
+    /// Non-finite values are rejected and leave the tile unchanged.
+    pub fn set_height(&mut self, height: f32) -> bool {
+        if !height.is_finite() {
+            return false;
+        }
+        self.height = height.clamp(MIN_TERRAIN_HEIGHT, MAX_TERRAIN_HEIGHT);
+        true
+    }
+}
+
+/// World-space sample of a tile-authored point on the planet surface.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SurfaceSample {
+    /// Position relative to the planet center, including terrain elevation.
+    pub position: Vec3,
+    /// Authored terrain elevation above the base planet radius.
+    pub height: f32,
+    /// Normalized outward radial direction at this sample.
+    pub normal: Vec3,
+}
+
+/// Sample the center of a tile using its authored height and the planet radius.
+///
+/// Returns `None` when the radius is invalid or the radius plus height is not
+/// positive. The tile is a flat patch for this POC, so its normal is radial.
+pub fn sample_tile_surface(tile: &PlanetTile, radius: f32) -> Option<SurfaceSample> {
+    if !radius.is_finite() || radius <= 0.0 {
+        return None;
+    }
+
+    let coordinate = tile.coordinate;
+    let u = (coordinate.x() as f32 + 0.5) / TILES_PER_FACE as f32 * 2.0 - 1.0;
+    let v = (coordinate.y() as f32 + 0.5) / TILES_PER_FACE as f32 * 2.0 - 1.0;
+    let normal = cube_face_point(coordinate.face(), u, v)?.normalize();
+    let height = tile.height();
+    let surface_radius = radius + height;
+    if surface_radius <= 0.0 {
+        return None;
+    }
+
+    Some(SurfaceSample {
+        position: normal * surface_radius,
+        height,
+        normal,
+    })
 }
 
 impl Default for PlanetTile {
@@ -282,15 +339,56 @@ mod tests {
         let mut tile = PlanetTile::new(coordinate);
         assert_eq!(tile.coordinate, coordinate);
         assert_eq!(tile.biome, Biome::Meadow);
-        assert_eq!(tile.height, 0.0);
+        assert_eq!(tile.height(), 0.0);
         assert_eq!(tile.resource_type, None);
 
         tile.biome = Biome::RedHighlands;
-        tile.height = 1.25;
+        assert!(tile.set_height(1.25));
         tile.resource_type = Some(ResourceType::IronMineral);
         assert_eq!(tile.biome, Biome::RedHighlands);
-        assert_eq!(tile.height, 1.25);
+        assert_eq!(tile.height(), 1.25);
         assert_eq!(tile.resource_type, Some(ResourceType::IronMineral));
+    }
+
+    #[test]
+    fn terrain_heights_are_bounded_and_reject_non_finite_values() {
+        let coordinate = TileCoordinate::new(PlanetFace::PositiveX, 0, 0).unwrap();
+        let mut tile = PlanetTile::new(coordinate);
+        assert!(tile.set_height(-100.0));
+        assert_eq!(tile.height(), MIN_TERRAIN_HEIGHT);
+        assert!(tile.set_height(100.0));
+        assert_eq!(tile.height(), MAX_TERRAIN_HEIGHT);
+        assert!(!tile.set_height(f32::NAN));
+        assert_eq!(tile.height(), MAX_TERRAIN_HEIGHT);
+    }
+
+    #[test]
+    fn flat_and_varied_tiles_sample_radius_height_and_outward_normal() {
+        let flat_coordinate = TileCoordinate::new(PlanetFace::PositiveZ, 11, 7).unwrap();
+        let flat = PlanetTile::new(flat_coordinate);
+        let flat_sample = sample_tile_surface(&flat, 40.0).unwrap();
+        assert_eq!(flat_sample.height, 0.0);
+        assert!((flat_sample.position.length() - 40.0).abs() < 1e-5);
+
+        let varied_coordinate = TileCoordinate::new(PlanetFace::NegativeY, 3, 19).unwrap();
+        let mut varied = PlanetTile::new(varied_coordinate);
+        assert!(varied.set_height(1.25));
+        let varied_sample = sample_tile_surface(&varied, 30.0).unwrap();
+        assert_eq!(varied_sample.height, 1.25);
+        assert!((varied_sample.position.length() - 31.25).abs() < 1e-5);
+        assert!((varied_sample.normal.length() - 1.0).abs() < 1e-6);
+        assert!(varied_sample.normal.dot(varied_sample.position) > 0.0);
+        assert!(varied_sample.normal.dot(Vec3::NEG_Y) > 0.0);
+    }
+
+    #[test]
+    fn surface_sampling_rejects_invalid_or_non_positive_surface_radius() {
+        let coordinate = TileCoordinate::new(PlanetFace::PositiveX, 0, 0).unwrap();
+        let mut tile = PlanetTile::new(coordinate);
+        assert!(sample_tile_surface(&tile, 0.0).is_none());
+        assert!(sample_tile_surface(&tile, f32::INFINITY).is_none());
+        assert!(tile.set_height(-0.5));
+        assert!(sample_tile_surface(&tile, 0.25).is_none());
     }
 
     #[test]
