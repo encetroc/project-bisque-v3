@@ -1,6 +1,6 @@
 //! Select and dispatch the best contextual interaction near the surface player.
 
-use bevy::prelude::*;
+use bevy::{input::mouse::MouseButton, prelude::*};
 
 use crate::player_movement::SurfacePlayer;
 
@@ -16,6 +16,8 @@ pub struct Interactable {
     pub prompt: String,
     /// Maximum world-space distance at which this target can be selected.
     pub range: f32,
+    /// Approximate world-space radius used by cursor ray picking.
+    pub pick_radius: f32,
 }
 
 impl Interactable {
@@ -23,13 +25,26 @@ impl Interactable {
         Self {
             prompt: prompt.into(),
             range: DEFAULT_INTERACTION_RANGE,
+            pick_radius: 1.0,
         }
+    }
+
+    pub fn with_pick_radius(mut self, radius: f32) -> Self {
+        self.pick_radius = radius;
+        self
     }
 }
 
 /// The sole selected interaction and the prompt text currently presented to the player.
 #[derive(Resource, Debug, Clone, PartialEq, Eq, Default)]
 pub struct SelectedInteraction(pub Option<InteractionPromptData>);
+
+/// The interactable currently under the cursor, independent of contextual range selection.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HoveredInteractable(pub Option<Entity>);
+
+#[derive(Component)]
+struct HoverScale(Vec3);
 
 /// Stable presentation and dispatch data for the selected target.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,7 +53,7 @@ pub struct InteractionPromptData {
     pub text: String,
 }
 
-/// Emitted once when E is pressed while an interaction target is selected.
+/// Emitted once when E or left-click is pressed while an interaction target is selected.
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InteractionRequested {
     pub target: Entity,
@@ -52,11 +67,18 @@ pub struct InteractionPlugin;
 impl Plugin for InteractionPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SelectedInteraction>()
+            .init_resource::<HoveredInteractable>()
             .add_message::<InteractionRequested>()
             .add_systems(Startup, spawn_prompt)
             .add_systems(
                 Update,
-                (select_interaction, dispatch_interaction, update_prompt_text)
+                (
+                    select_interaction,
+                    select_mouse_hover,
+                    update_hover_highlight,
+                    dispatch_interaction,
+                    update_prompt_text,
+                )
                     .chain()
                     .after(crate::player_movement::move_surface_players),
             );
@@ -74,6 +96,89 @@ fn spawn_prompt(mut commands: Commands) {
             ..default()
         },
     ));
+}
+
+fn select_mouse_hover(
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    candidates: Query<(Entity, &Interactable, &GlobalTransform)>,
+    mut hovered: ResMut<HoveredInteractable>,
+) {
+    let next = windows
+        .single()
+        .ok()
+        .and_then(Window::cursor_position)
+        .and_then(|cursor| {
+            let (camera, transform) = cameras.single().ok()?;
+            let ray = camera.viewport_to_world(transform, cursor).ok()?;
+            choose_ray_interactable(
+                ray.origin,
+                *ray.direction,
+                candidates.iter().map(|(entity, interactable, transform)| {
+                    (entity, transform.translation(), interactable.pick_radius)
+                }),
+            )
+        });
+    if hovered.0 != next {
+        hovered.0 = next;
+    }
+}
+
+/// Pick the nearest interactable sphere intersected by a camera ray.
+pub fn choose_ray_interactable(
+    origin: Vec3,
+    direction: Vec3,
+    candidates: impl IntoIterator<Item = (Entity, Vec3, f32)>,
+) -> Option<Entity> {
+    let direction = direction.try_normalize()?;
+    candidates
+        .into_iter()
+        .filter_map(|(entity, center, radius)| {
+            if !center.is_finite() || !radius.is_finite() || radius <= 0.0 {
+                return None;
+            }
+            let offset = origin - center;
+            let b = offset.dot(direction);
+            let c = offset.length_squared() - radius * radius;
+            let discriminant = b * b - c;
+            if discriminant < 0.0 || !discriminant.is_finite() {
+                return None;
+            }
+            let root = discriminant.sqrt();
+            let distance = [-b - root, -b + root]
+                .into_iter()
+                .filter(|distance| *distance >= 0.0)
+                .min_by(f32::total_cmp)?;
+            Some((distance, entity.to_bits(), entity))
+        })
+        .min_by(|left, right| {
+            left.0
+                .total_cmp(&right.0)
+                .then_with(|| left.1.cmp(&right.1))
+        })
+        .map(|(_, _, entity)| entity)
+}
+
+fn update_hover_highlight(
+    mut commands: Commands,
+    hovered: Res<HoveredInteractable>,
+    mut candidates: Query<(Entity, &mut Transform, Option<&HoverScale>), With<Interactable>>,
+) {
+    if !hovered.is_changed() {
+        return;
+    }
+    for (entity, mut transform, scale) in &mut candidates {
+        if hovered.0 == Some(entity) {
+            if scale.is_none() {
+                let original = transform.scale;
+                transform.scale = original * 1.12;
+                commands.entity(entity).insert(HoverScale(original));
+            }
+        } else if let Some(original) = scale {
+            transform.scale = original.0;
+            commands.entity(entity).remove::<HoverScale>();
+        }
+    }
 }
 
 fn select_interaction(
@@ -154,10 +259,15 @@ fn choose_interaction<'a>(
 
 pub(crate) fn dispatch_interaction(
     keyboard: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    placement: Option<Res<crate::placement::PlacementMode>>,
     selected: Res<SelectedInteraction>,
     mut requests: MessageWriter<InteractionRequested>,
 ) {
-    if keyboard.just_pressed(KeyCode::KeyE)
+    if placement.is_some_and(|mode| mode.active) {
+        return;
+    }
+    if (keyboard.just_pressed(KeyCode::KeyE) || mouse.just_pressed(MouseButton::Left))
         && let Some(selected) = &selected.0
     {
         requests.write(InteractionRequested {
@@ -271,11 +381,56 @@ mod tests {
     }
 
     #[test]
-    fn pressing_e_dispatches_only_the_selected_target() {
+    fn camera_ray_picks_nearest_interactable_and_ignores_misses() {
+        let near = Entity::from_raw_u32(1).unwrap();
+        let far = Entity::from_raw_u32(2).unwrap();
+        assert_eq!(
+            choose_ray_interactable(
+                Vec3::ZERO,
+                Vec3::Z,
+                [(far, Vec3::Z * 5.0, 1.0), (near, Vec3::Z * 3.0, 0.5)],
+            ),
+            Some(near)
+        );
+        assert_eq!(
+            choose_ray_interactable(Vec3::ZERO, Vec3::X, [(near, Vec3::Z, 0.5)]),
+            None
+        );
+    }
+
+    #[test]
+    fn hover_highlight_scales_the_target_and_restores_it_when_cleared() {
+        let mut app = App::new();
+        app.init_resource::<HoveredInteractable>()
+            .add_systems(Update, update_hover_highlight);
+        let entity = app
+            .world_mut()
+            .spawn((
+                Interactable::new("Test"),
+                Transform::from_scale(Vec3::splat(2.0)),
+            ))
+            .id();
+        app.world_mut().resource_mut::<HoveredInteractable>().0 = Some(entity);
+        app.update();
+        assert_eq!(
+            app.world().get::<Transform>(entity).unwrap().scale,
+            Vec3::splat(2.24)
+        );
+        app.world_mut().resource_mut::<HoveredInteractable>().0 = None;
+        app.update();
+        assert_eq!(
+            app.world().get::<Transform>(entity).unwrap().scale,
+            Vec3::splat(2.0)
+        );
+    }
+
+    #[test]
+    fn left_click_dispatches_the_same_selected_target_as_e() {
         let mut app = App::new();
         app.add_message::<InteractionRequested>()
             .init_resource::<SelectedInteraction>()
             .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
             .add_systems(Update, dispatch_interaction);
         let target = app.world_mut().spawn_empty().id();
         app.world_mut().resource_mut::<SelectedInteraction>().0 = Some(InteractionPromptData {
@@ -283,8 +438,8 @@ mod tests {
             text: "[E] Test interaction".to_owned(),
         });
         app.world_mut()
-            .resource_mut::<ButtonInput<KeyCode>>()
-            .press(KeyCode::KeyE);
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
         app.update();
 
         let messages = app.world().resource::<Messages<InteractionRequested>>();

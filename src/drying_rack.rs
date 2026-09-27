@@ -1,6 +1,6 @@
 //! Two-slot drying rack jobs for greenware.
 
-use bevy::prelude::*;
+use bevy::{input::mouse::MouseButton, prelude::*};
 
 use crate::{
     ceramics::{CeramicItem, ProcessingState},
@@ -286,8 +286,10 @@ fn begin_rack_use(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn control_rack(
     keyboard: Res<ButtonInput<KeyCode>>,
+    mouse: Option<Res<ButtonInput<MouseButton>>>,
     mut active: ResMut<DryingRackUse>,
     mut racks: Query<&mut DryingRack>,
     mut inventory: ResMut<Inventory>,
@@ -297,7 +299,9 @@ fn control_rack(
     mut feedback: ResMut<RackFeedback>,
 ) {
     let Some(entity) = active.0 else { return };
-    if keyboard.just_pressed(KeyCode::Escape) {
+    if keyboard.just_pressed(KeyCode::Escape)
+        || mouse.is_some_and(|input| input.just_pressed(MouseButton::Right))
+    {
         active.0 = None;
         feedback.0 = None;
         return;

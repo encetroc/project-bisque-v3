@@ -1,6 +1,6 @@
 //! Primitive NPC characters and their named, surface-aligned properties.
 
-use bevy::prelude::*;
+use bevy::{input::mouse::MouseButton, prelude::*};
 
 use crate::{
     ceramics::{CeramicForm, CeramicItem, ProcessingState},
@@ -119,6 +119,7 @@ impl Plugin for NpcPlugin {
                     update_npc_schedules,
                     handle_npc_talks,
                     handle_npc_gifts,
+                    cancel_npc_dialogue,
                     update_dialogue_ui,
                 )
                     .chain(),
@@ -544,6 +545,15 @@ fn handle_npc_gifts(
     }
 }
 
+fn cancel_npc_dialogue(
+    mouse: Option<Res<ButtonInput<MouseButton>>>,
+    mut display: ResMut<NpcDialogueDisplay>,
+) {
+    if mouse.is_some_and(|input| input.just_pressed(MouseButton::Right)) {
+        display.0 = None;
+    }
+}
+
 fn update_dialogue_ui(
     display: Res<NpcDialogueDisplay>,
     mut labels: Query<&mut Text, With<NpcDialogueText>>,
@@ -696,7 +706,8 @@ fn spawn_npc_world(
             Name::new(definition.property_name),
             definition.property,
             property_transform,
-            Interactable::new(format!("Visit the {}", definition.property_name)),
+            Interactable::new(format!("Visit the {}", definition.property_name))
+                .with_pick_radius(2.0),
             Visibility::default(),
         ));
         if definition.property == NpcProperty::Bakery {
@@ -891,6 +902,24 @@ mod tests {
             ),
             GiftResult::NotOwned
         );
+    }
+
+    #[test]
+    fn right_click_cancels_the_active_dialogue() {
+        let mut app = App::new();
+        app.init_resource::<NpcDialogueDisplay>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .add_systems(Update, cancel_npc_dialogue);
+        app.world_mut().resource_mut::<NpcDialogueDisplay>().0 = Some(NpcDialogueLine {
+            speaker: NpcCharacter::Baker,
+            kind: NpcDialogueKind::Generic,
+            text: "Hello there.",
+        });
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Right);
+        app.update();
+        assert_eq!(app.world().resource::<NpcDialogueDisplay>().0, None);
     }
 
     #[test]

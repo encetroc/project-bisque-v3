@@ -72,9 +72,11 @@ fn spawn_camera_rig(mut commands: Commands) {
     ));
 }
 
+#[allow(clippy::too_many_arguments)]
 fn follow_surface_player(
     time: Res<Time>,
     keyboard: Res<ButtonInput<KeyCode>>,
+    placement: Option<Res<crate::placement::PlacementMode>>,
     mut wheel: MessageReader<MouseWheel>,
     players: Query<(&SurfacePlayer, &Transform)>,
     mut targets: Query<(&mut Transform, &mut CameraTarget)>,
@@ -102,8 +104,11 @@ fn follow_surface_player(
         );
     }
 
-    let yaw_input =
-        f32::from(keyboard.pressed(KeyCode::KeyE)) - f32::from(keyboard.pressed(KeyCode::KeyQ));
+    let yaw_input = if placement.as_ref().is_some_and(|mode| mode.active) {
+        0.0
+    } else {
+        f32::from(keyboard.pressed(KeyCode::KeyE)) - f32::from(keyboard.pressed(KeyCode::KeyQ))
+    };
     target.yaw = wrap_yaw(target.yaw + yaw_input * CAMERA_YAW_SPEED * time.delta_secs());
 
     // The player's rotation supplies the complete local tangent frame. Applying
@@ -112,6 +117,7 @@ fn follow_surface_player(
 
     let wheel_delta: f32 = wheel.read().map(|event| event.y).sum();
     if wheel_delta != 0.0
+        && !placement.as_ref().is_some_and(|mode| mode.active)
         && let Ok(mut camera_transform) = cameras.single_mut()
     {
         let distance = camera_transform.translation.length();

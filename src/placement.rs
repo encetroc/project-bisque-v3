@@ -1,6 +1,9 @@
 //! Surface-relative placement mode for ceramic inventory objects.
 
-use bevy::{input::mouse::MouseButton, prelude::*};
+use bevy::{
+    input::mouse::{MouseButton, MouseWheel},
+    prelude::*,
+};
 
 use crate::{
     ceramic_visuals::{spawn_ceramic_ghost, spawn_ceramic_visual},
@@ -198,6 +201,7 @@ fn placement_controls(
     mut commands: Commands,
     keyboard: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
+    mut wheel: MessageReader<MouseWheel>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     mut mode: ResMut<PlacementMode>,
@@ -208,6 +212,7 @@ fn placement_controls(
     mut help: Query<&mut Text, With<PlacementHelpText>>,
     mut ghosts: Query<&mut Transform, With<PlacementGhost>>,
 ) {
+    let wheel_delta = wheel.read().map(|event| event.y).sum::<f32>();
     if !mode.active && keyboard.just_pressed(KeyCode::KeyP) {
         mode.selected = inventory.slots().iter().find_map(|slot| match slot {
             InventorySlot::Ceramic(id) => Some(*id),
@@ -225,12 +230,12 @@ fn placement_controls(
     if keyboard.just_pressed(KeyCode::Escape) || mouse.just_pressed(MouseButton::Right) {
         cancel_placement(&mut commands, &mut mode);
     } else {
-        if keyboard.just_pressed(KeyCode::ArrowLeft) {
-            mode.rotation -= ROTATION_STEP;
-        }
-        if keyboard.just_pressed(KeyCode::ArrowRight) {
-            mode.rotation += ROTATION_STEP;
-        }
+        mode.rotation = adjust_placement_rotation(
+            mode.rotation,
+            keyboard.just_pressed(KeyCode::ArrowLeft) || keyboard.just_pressed(KeyCode::KeyQ),
+            keyboard.just_pressed(KeyCode::ArrowRight) || keyboard.just_pressed(KeyCode::KeyE),
+            wheel_delta,
+        );
         if keyboard.just_pressed(KeyCode::BracketLeft)
             || keyboard.just_pressed(KeyCode::BracketRight)
         {
@@ -324,7 +329,7 @@ fn placement_controls(
         }
     }
     let status = if mode.active {
-        "Placement: Enter/click place, Esc/right-click cancel, ←/→ rotate, [/] select ceramic"
+        "Placement: Enter/click place, Esc/right-click cancel, Q/E or wheel rotate, [/] select ceramic"
     } else {
         "P: place a ceramic from inventory"
     };
@@ -337,12 +342,21 @@ fn placement_controls(
 struct PlacementGhost;
 
 fn cancel_placement(commands: &mut Commands, mode: &mut PlacementMode) {
-    if let Some(ghost) = mode.ghost.take() {
+    if let Some(ghost) = clear_placement_state(mode) {
         commands.entity(ghost).despawn();
     }
+}
+
+fn clear_placement_state(mode: &mut PlacementMode) -> Option<Entity> {
     mode.active = false;
     mode.selected = None;
     mode.surface = None;
+    mode.rotation = 0.0;
+    mode.ghost.take()
+}
+
+fn adjust_placement_rotation(rotation: f32, left: bool, right: bool, wheel_delta: f32) -> f32 {
+    rotation + (f32::from(right) - f32::from(left) + wheel_delta) * ROTATION_STEP
 }
 
 fn cursor_surface(
@@ -372,6 +386,43 @@ mod tests {
             state: crate::ceramics::ProcessingState::Fired,
         }
         .instantiate(CeramicObjectId(id))
+    }
+
+    #[test]
+    fn placement_rotation_accepts_qe_or_arrows_and_mouse_wheel() {
+        assert_eq!(
+            adjust_placement_rotation(0.0, true, false, 0.0),
+            -ROTATION_STEP
+        );
+        assert_eq!(
+            adjust_placement_rotation(0.0, false, true, 0.0),
+            ROTATION_STEP
+        );
+        assert_eq!(
+            adjust_placement_rotation(0.0, false, false, 2.0),
+            2.0 * ROTATION_STEP
+        );
+    }
+
+    #[test]
+    fn cancellation_clears_placement_and_returns_preview_for_despawn() {
+        let ghost = Entity::from_raw_u32(7).unwrap();
+        let mut mode = PlacementMode {
+            active: true,
+            selected: Some(CeramicObjectId(8)),
+            surface: Some(PlacementSurface {
+                location: SurfaceLocation::new(Vec3::Y, 0.0),
+                normal: Vec3::Y,
+            }),
+            rotation: 1.0,
+            ghost: Some(ghost),
+        };
+        assert_eq!(clear_placement_state(&mut mode), Some(ghost));
+        assert!(!mode.active);
+        assert_eq!(mode.selected, None);
+        assert_eq!(mode.surface, None);
+        assert_eq!(mode.rotation, 0.0);
+        assert_eq!(mode.ghost, None);
     }
 
     #[test]

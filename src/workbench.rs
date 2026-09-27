@@ -1,6 +1,6 @@
 //! Workbench interaction, recipe selection, and transactional greenware crafting.
 
-use bevy::prelude::*;
+use bevy::{input::mouse::MouseButton, prelude::*};
 
 use crate::{
     ceramics::{CeramicForm, CeramicItem, ClayMaterial, Glaze, recipe_for},
@@ -245,8 +245,10 @@ fn begin_workbench_use(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn control_workbench(
     keyboard: Res<ButtonInput<KeyCode>>,
+    mouse: Option<Res<ButtonInput<MouseButton>>>,
     mut selection: ResMut<WorkbenchSelection>,
     mut crafted: ResMut<CraftedCeramics>,
     mut workbenches: Query<&mut Workbench>,
@@ -258,7 +260,9 @@ fn control_workbench(
     if !selection.active {
         return;
     }
-    if keyboard.just_pressed(KeyCode::Escape) {
+    if keyboard.just_pressed(KeyCode::Escape)
+        || mouse.is_some_and(|input| input.just_pressed(MouseButton::Right))
+    {
         selection.active = false;
         feedback.0 = None;
         return;

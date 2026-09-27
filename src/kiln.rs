@@ -1,6 +1,6 @@
 //! Two-slot kiln firing jobs for dry ceramics.
 
-use bevy::prelude::*;
+use bevy::{input::mouse::MouseButton, prelude::*};
 
 use crate::{
     ceramics::{CeramicItem, ProcessingState},
@@ -282,8 +282,10 @@ fn begin_kiln_use(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn control_kiln(
     keyboard: Res<ButtonInput<KeyCode>>,
+    mouse: Option<Res<ButtonInput<MouseButton>>>,
     mut active: ResMut<KilnUse>,
     mut kilns: Query<&mut Kiln>,
     mut inventory: ResMut<Inventory>,
@@ -293,7 +295,9 @@ fn control_kiln(
     mut feedback: ResMut<KilnFeedback>,
 ) {
     let Some(entity) = active.0 else { return };
-    if keyboard.just_pressed(KeyCode::Escape) {
+    if keyboard.just_pressed(KeyCode::Escape)
+        || mouse.is_some_and(|input| input.just_pressed(MouseButton::Right))
+    {
         active.0 = None;
         feedback.0 = None;
         return;
