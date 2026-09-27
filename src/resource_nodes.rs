@@ -2,11 +2,15 @@
 
 use bevy::prelude::*;
 
-use crate::planet::{
-    Biome, DEFAULT_PLANET_RADIUS, PlanetFace, PlanetTile, ResourceType, TILES_PER_FACE,
-    TileCoordinate, authored_planet_tile, sample_tile_surface,
-};
 use crate::surface_transform::{SurfaceLocation, surface_transform};
+use crate::{
+    interaction::{Interactable, InteractionRequested},
+    inventory::Inventory,
+    planet::{
+        Biome, DEFAULT_PLANET_RADIUS, PlanetFace, PlanetTile, ResourceType, TILES_PER_FACE,
+        TileCoordinate, authored_planet_tile, sample_tile_surface,
+    },
+};
 
 /// Stable authored description of a single resource node.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -18,8 +22,7 @@ pub struct ResourceNodeSpawn {
     pub normal: Vec3,
 }
 
-/// Marks a world entity as a resource node. Gathering behavior is intentionally
-/// outside this feature; this component only describes its authored identity.
+/// Marks a world entity as an authored resource node.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResourceNode {
     pub coordinate: TileCoordinate,
@@ -27,12 +30,25 @@ pub struct ResourceNode {
     pub resource_type: ResourceType,
 }
 
+/// Persistent progression flag set when the player first gathers Highlands red clay.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RedClayDiscovery {
+    pub discovered: bool,
+}
+
+#[derive(Component)]
+struct GatheredRedClay;
+
 /// Install deterministic resource-node placement and primitive visuals.
 pub struct ResourceNodePlugin;
 
 impl Plugin for ResourceNodePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_resource_nodes);
+        app.init_resource::<RedClayDiscovery>()
+            .init_resource::<Inventory>()
+            .add_message::<InteractionRequested>()
+            .add_systems(Startup, spawn_resource_nodes)
+            .add_systems(Update, gather_red_clay);
     }
 }
 
@@ -136,13 +152,40 @@ fn spawn_resource_nodes(
             biome: spawn.biome,
             resource_type: spawn.resource_type,
         };
+        let mut entity = commands.spawn((
+            Name::new(format!("{:?} resource node", spawn.resource_type)),
+            node,
+            transform,
+        ));
+        if spawn.biome == Biome::RedHighlands && spawn.resource_type == ResourceType::RedClay {
+            entity.insert(Interactable::new("Gather red clay"));
+        }
+        entity.with_children(|children| visuals.spawn(children, spawn.resource_type));
+    }
+}
+
+fn gather_red_clay(
+    mut commands: Commands,
+    mut requests: MessageReader<InteractionRequested>,
+    nodes: Query<&ResourceNode, Without<GatheredRedClay>>,
+    mut inventory: ResMut<Inventory>,
+    mut discovery: ResMut<RedClayDiscovery>,
+) {
+    for request in requests.read() {
+        let Ok(node) = nodes.get(request.target) else {
+            continue;
+        };
+        if node.biome != Biome::RedHighlands || node.resource_type != ResourceType::RedClay {
+            continue;
+        }
+        if inventory.add_resource(ResourceType::RedClay, 1) != 0 {
+            continue;
+        }
+        discovery.discovered = true;
         commands
-            .spawn((
-                Name::new(format!("{:?} resource node", spawn.resource_type)),
-                node,
-                transform,
-            ))
-            .with_children(|children| visuals.spawn(children, spawn.resource_type));
+            .entity(request.target)
+            .insert(GatheredRedClay)
+            .remove::<Interactable>();
     }
 }
 
@@ -353,6 +396,67 @@ mod tests {
                 "missing {resource_type:?} in {biome:?}"
             );
         }
+    }
+
+    #[test]
+    fn red_clay_gathering_is_highlands_only_and_discovery_persists_after_collection() {
+        let mut app = App::new();
+        app.add_message::<InteractionRequested>()
+            .init_resource::<Inventory>()
+            .init_resource::<RedClayDiscovery>()
+            .add_systems(Update, gather_red_clay);
+        let highlands = app
+            .world_mut()
+            .spawn(ResourceNode {
+                coordinate: TileCoordinate::new(PlanetFace::PositiveX, 1, 1).unwrap(),
+                biome: Biome::RedHighlands,
+                resource_type: ResourceType::RedClay,
+            })
+            .id();
+        let invalid_meadow = app
+            .world_mut()
+            .spawn(ResourceNode {
+                coordinate: TileCoordinate::new(PlanetFace::PositiveY, 1, 1).unwrap(),
+                biome: Biome::Meadow,
+                resource_type: ResourceType::RedClay,
+            })
+            .id();
+
+        app.world_mut().write_message(InteractionRequested {
+            target: invalid_meadow,
+        });
+        app.update();
+        assert!(!app.world().resource::<RedClayDiscovery>().discovered);
+        assert_eq!(
+            app.world()
+                .resource::<Inventory>()
+                .resource_count(ResourceType::RedClay),
+            0
+        );
+
+        app.world_mut()
+            .write_message(InteractionRequested { target: highlands });
+        app.update();
+        assert!(app.world().resource::<RedClayDiscovery>().discovered);
+        assert_eq!(
+            app.world()
+                .resource::<Inventory>()
+                .resource_count(ResourceType::RedClay),
+            1
+        );
+        assert!(app.world().get::<GatheredRedClay>(highlands).is_some());
+        assert!(app.world().get::<ResourceNode>(highlands).is_some());
+
+        app.world_mut()
+            .write_message(InteractionRequested { target: highlands });
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<Inventory>()
+                .resource_count(ResourceType::RedClay),
+            1,
+            "a previously gathered node cannot be collected again after returning"
+        );
     }
 
     #[test]

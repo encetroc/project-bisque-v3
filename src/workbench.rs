@@ -10,6 +10,7 @@ use crate::{
     machine_upgrades::{MachineUpgradeCost, MachineUpgradeError, pay_machine_upgrade},
     planet::ResourceType,
     planet::{DEFAULT_PLANET_RADIUS, PlanetFace, PlanetTile, TileCoordinate, sample_tile_surface},
+    resource_nodes::RedClayDiscovery,
     surface_transform::{SurfaceLocation, surface_transform},
 };
 
@@ -205,6 +206,7 @@ impl Plugin for WorkbenchPlugin {
             .init_resource::<CraftedCeramics>()
             .init_resource::<WorkbenchFeedback>()
             .init_resource::<Wallet>()
+            .init_resource::<RedClayDiscovery>()
             .add_systems(Startup, (spawn_workbench, spawn_workbench_help))
             .add_systems(
                 Update,
@@ -250,6 +252,7 @@ fn control_workbench(
     mut workbenches: Query<&mut Workbench>,
     mut inventory: ResMut<Inventory>,
     mut wallet: ResMut<Wallet>,
+    discovery: Res<RedClayDiscovery>,
     mut feedback: ResMut<WorkbenchFeedback>,
 ) {
     if !selection.active {
@@ -286,6 +289,7 @@ fn control_workbench(
     } else if keyboard.just_pressed(KeyCode::Digit2) {
         selection.form = CeramicForm::Bowl;
     } else if keyboard.just_pressed(KeyCode::Digit6)
+        && discovery.discovered
         && workbenches
             .single()
             .is_ok_and(|workbench| workbench.upgraded)
@@ -313,9 +317,10 @@ fn control_workbench(
         let WorkbenchSelection {
             form, clay, glaze, ..
         } = *selection;
-        let vase_unlocked = workbenches
-            .single()
-            .is_ok_and(|workbench| workbench.upgraded);
+        let vase_unlocked = discovery.discovered
+            && workbenches
+                .single()
+                .is_ok_and(|workbench| workbench.upgraded);
         feedback.0 = Some(
             match craft_greenware_at_level(
                 &mut inventory,
@@ -338,22 +343,25 @@ fn control_workbench(
 fn update_workbench_help(
     selection: Res<WorkbenchSelection>,
     workbenches: Query<&Workbench>,
+    discovery: Res<RedClayDiscovery>,
     feedback: Res<WorkbenchFeedback>,
     mut labels: Query<&mut Text, With<WorkbenchHelpText>>,
 ) {
-    if !selection.is_changed() && !feedback.is_changed() {
+    if !selection.is_changed() && !feedback.is_changed() && !discovery.is_changed() {
         return;
     }
     let message = if !selection.active {
         String::new()
     } else {
-        let vase_option = if workbenches
-            .single()
-            .is_ok_and(|workbench| workbench.upgraded)
-        {
-            "6 Vase"
-        } else {
-            "6 Vase (locked)"
+        let vase_option = match (
+            workbenches
+                .single()
+                .is_ok_and(|workbench| workbench.upgraded),
+            discovery.discovered,
+        ) {
+            (true, true) => "6 Vase",
+            (true, false) => "6 Vase (find red clay)",
+            (false, _) => "6 Vase (upgrade + red clay)",
         };
         format!(
             "Workbench — 1 Cup / 2 Bowl / {vase_option} | U Upgrade (30 coins + 5 wood) | C Common / R Red / P Pale clay | 0 None / 3 Blue / 4 Green / 5 White glaze | Enter Craft | Esc Close\nSelected: {:?}, {:?} clay, {:?} glaze{}",
@@ -499,6 +507,7 @@ mod tests {
             .init_resource::<CraftedCeramics>()
             .init_resource::<WorkbenchFeedback>()
             .init_resource::<Wallet>()
+            .init_resource::<RedClayDiscovery>()
             .init_resource::<ButtonInput<KeyCode>>()
             .add_systems(Update, control_workbench);
         app.world_mut().resource_mut::<WorkbenchSelection>().active = true;
@@ -515,16 +524,20 @@ mod tests {
     }
 
     #[test]
-    fn vase_selection_is_available_after_workbench_upgrade() {
+    fn vase_selection_is_available_after_discovery_and_workbench_upgrade() {
         let mut app = App::new();
         app.init_resource::<WorkbenchSelection>()
             .init_resource::<Inventory>()
             .init_resource::<CraftedCeramics>()
             .init_resource::<WorkbenchFeedback>()
             .init_resource::<Wallet>()
+            .init_resource::<RedClayDiscovery>()
             .init_resource::<ButtonInput<KeyCode>>()
             .add_systems(Update, control_workbench);
         app.world_mut().resource_mut::<WorkbenchSelection>().active = true;
+        app.world_mut()
+            .resource_mut::<RedClayDiscovery>()
+            .discovered = true;
         app.world_mut().spawn(Workbench { upgraded: true });
         app.world_mut()
             .resource_mut::<ButtonInput<KeyCode>>()
@@ -532,6 +545,63 @@ mod tests {
         app.update();
         assert_eq!(
             app.world().resource::<WorkbenchSelection>().form,
+            CeramicForm::Vase
+        );
+    }
+
+    #[test]
+    fn vase_requires_both_red_clay_discovery_and_workbench_upgrade() {
+        let mut app = App::new();
+        app.init_resource::<WorkbenchSelection>()
+            .init_resource::<Inventory>()
+            .init_resource::<CraftedCeramics>()
+            .init_resource::<WorkbenchFeedback>()
+            .init_resource::<Wallet>()
+            .init_resource::<RedClayDiscovery>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .add_systems(Update, control_workbench);
+        app.world_mut().resource_mut::<WorkbenchSelection>().active = true;
+        app.world_mut().resource_mut::<WorkbenchSelection>().clay = ClayMaterial::Red;
+        app.world_mut()
+            .resource_mut::<Inventory>()
+            .add_resource(ResourceType::RedClay, 3);
+        app.world_mut().spawn(Workbench { upgraded: true });
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Digit6);
+        app.update();
+        assert_eq!(
+            app.world().resource::<WorkbenchSelection>().form,
+            CeramicForm::Cup,
+            "the machine upgrade alone does not unlock vase selection"
+        );
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .release(KeyCode::Digit6);
+        app.update();
+        app.world_mut()
+            .resource_mut::<RedClayDiscovery>()
+            .discovered = true;
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Digit6);
+        app.update();
+        assert_eq!(
+            app.world().resource::<WorkbenchSelection>().form,
+            CeramicForm::Vase
+        );
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .release(KeyCode::Digit6);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Enter);
+        app.update();
+        assert_eq!(app.world().resource::<CraftedCeramics>().items.len(), 1);
+        assert_eq!(
+            app.world().resource::<CraftedCeramics>().items[0].form(),
             CeramicForm::Vase
         );
     }
