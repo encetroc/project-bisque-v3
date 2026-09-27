@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 
 pub mod camera_follow;
+pub mod inventory;
 pub mod planet;
 pub mod planet_surface;
 pub mod player_movement;
