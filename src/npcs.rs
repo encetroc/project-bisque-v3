@@ -650,6 +650,11 @@ fn spawn_npc_world(
                 },
             ))
             .id();
+        if definition.character == NpcCharacter::Baker {
+            commands
+                .entity(character)
+                .insert(crate::npc_requests::NpcRequest::baker());
+        }
         commands.entity(character).with_children(|children| {
             children.spawn((
                 Name::new(format!("{} body", definition.character_name)),

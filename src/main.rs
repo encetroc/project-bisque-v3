@@ -9,6 +9,7 @@ pub mod game_clock;
 pub mod interaction;
 pub mod inventory;
 pub mod kiln;
+pub mod npc_requests;
 pub mod npcs;
 pub mod placement;
 pub mod planet;
@@ -33,6 +34,7 @@ fn main() {
         .add_plugins(kiln::KilnPlugin)
         .add_plugins(studio::StudioPlugin)
         .add_plugins(npcs::NpcPlugin)
+        .add_plugins(npc_requests::NpcRequestPlugin)
         .add_plugins(placement::PlacementPlugin)
         .add_plugins(player_movement::PlayerMovementPlugin)
         .add_plugins(camera_follow::SurfaceCameraFollowPlugin)
