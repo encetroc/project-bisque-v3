@@ -17,6 +17,7 @@ use crate::{
     npc_property_upgrade::BakeryUpgrade,
     npc_requests::{BakerFinalOrder, NpcRequest, NpcRequestState},
     npcs::{NpcCharacter, NpcFriendship, NpcProperty},
+    objectives::ObjectiveProgress,
     placement::PlayerPlacedObject,
     planet::{ResourceType, TileCoordinate},
     player_movement::SurfacePlayer,
@@ -82,6 +83,8 @@ pub struct GameSave {
     pub player_placements: Vec<PlayerPlacedSave>,
     pub placement_slots: Vec<PlacementSlotSave>,
     pub red_clay_discovered: bool,
+    #[serde(default)]
+    pub objectives: ObjectiveProgress,
 }
 
 impl GameSave {
@@ -108,6 +111,7 @@ impl GameSave {
             player_placements: Vec::new(),
             placement_slots: Vec::new(),
             red_clay_discovered: false,
+            objectives: ObjectiveProgress::default(),
         }
     }
 
@@ -166,6 +170,11 @@ impl GameSave {
                     .map(|item| item.id.0)
                     .max()
                     .unwrap_or(0)
+            && self.objectives.tracked_cup.is_none_or(|id| {
+                self.ceramics
+                    .iter()
+                    .any(|item| item.id == id && item.form() == crate::ceramics::CeramicForm::Cup)
+            })
             && self.unique_owned_ceramics()
     }
 
@@ -280,6 +289,9 @@ fn capture_save(world: &mut World) -> GameSave {
     }
     if let Some(value) = world.get_resource::<RedClayDiscovery>() {
         save.red_clay_discovered = value.discovered;
+    }
+    if let Some(value) = world.get_resource::<ObjectiveProgress>() {
+        save.objectives = *value;
     }
     {
         let mut q = world.query::<&SurfacePlayer>();
@@ -428,6 +440,9 @@ fn apply_save(world: &mut World, save: &GameSave) {
     }
     if let Some(mut discovery) = world.get_resource_mut::<RedClayDiscovery>() {
         discovery.discovered = save.red_clay_discovered;
+    }
+    if let Some(mut objectives) = world.get_resource_mut::<ObjectiveProgress>() {
+        *objectives = save.objectives;
     }
     {
         let mut q = world.query::<(&mut SurfacePlayer, &mut Transform)>();
@@ -964,6 +979,10 @@ mod tests {
             event: None,
         });
         save.red_clay_discovered = true;
+        save.objectives = ObjectiveProgress {
+            current: crate::objectives::Objective::UpgradeKiln,
+            tracked_cup: Some(CeramicObjectId(7)),
+        };
         let encoded = save.encode().unwrap();
         assert_eq!(GameSave::decode(&encoded), Some(save.clone()));
         save.ceramics.push(ceramic(1));
@@ -983,6 +1002,7 @@ mod tests {
         world.init_resource::<GameClock>();
         world.init_resource::<CraftedCeramics>();
         world.init_resource::<RedClayDiscovery>();
+        world.init_resource::<ObjectiveProgress>();
         world.init_resource::<AppliedNpcPropertyEvents>();
         {
             let mut inventory = world.resource_mut::<Inventory>();
@@ -995,6 +1015,9 @@ mod tests {
             .resource_mut::<CraftedCeramics>()
             .restore((1..=13).map(ceramic).collect(), 13);
         world.resource_mut::<RedClayDiscovery>().discovered = true;
+        world.resource_mut::<ObjectiveProgress>().current =
+            crate::objectives::Objective::UpgradeKiln;
+        world.resource_mut::<ObjectiveProgress>().tracked_cup = Some(CeramicObjectId(7));
 
         let player = crate::player_movement::SurfacePlayer::new(
             crate::surface_transform::SurfaceLocation::new(

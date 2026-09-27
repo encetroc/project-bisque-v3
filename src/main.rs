@@ -17,6 +17,7 @@ pub mod npc_production;
 pub mod npc_property_upgrade;
 pub mod npc_requests;
 pub mod npcs;
+pub mod objectives;
 pub mod placement;
 pub mod planet;
 pub mod planet_surface;
@@ -33,6 +34,7 @@ fn main() {
         .add_plugins(game_clock::GameClockPlugin)
         .add_plugins(day_time_hud::DayTimeHudPlugin)
         .add_plugins(economy::EconomyPlugin)
+        .add_plugins(objectives::ObjectivePlugin)
         .add_plugins(planet_surface::PlanetSurfacePlugin)
         .add_plugins(ceramic_visuals::CeramicVisualPlugin)
         .add_plugins(resource_nodes::ResourceNodePlugin)

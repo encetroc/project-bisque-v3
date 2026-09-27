@@ -235,6 +235,13 @@ pub struct SellItemRequested {
     pub item: SaleItem,
 }
 
+/// Emitted only after a sale transaction commits successfully.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CeramicSold {
+    pub item: SaleItem,
+    pub price: u64,
+}
+
 pub struct EconomyPlugin;
 
 impl Plugin for EconomyPlugin {
@@ -242,6 +249,7 @@ impl Plugin for EconomyPlugin {
         app.init_resource::<Wallet>()
             .init_resource::<MerchantStock>()
             .add_message::<SellItemRequested>()
+            .add_message::<CeramicSold>()
             .add_message::<PurchaseItemRequested>()
             .add_systems(Update, (handle_sale_requests, handle_purchase_requests));
     }
@@ -273,10 +281,17 @@ fn handle_sale_requests(
     mut inventory: ResMut<Inventory>,
     crafted: Res<CraftedCeramics>,
     mut wallet: ResMut<Wallet>,
+    mut sold: MessageWriter<CeramicSold>,
 ) {
     for request in requests.read() {
-        if merchants.get(request.merchant).is_ok() {
-            let _ = sell_to_merchant(&mut inventory, &crafted.items, &mut wallet, request.item);
+        if merchants.get(request.merchant).is_ok()
+            && let Ok(price) =
+                sell_to_merchant(&mut inventory, &crafted.items, &mut wallet, request.item)
+        {
+            sold.write(CeramicSold {
+                item: request.item,
+                price,
+            });
         }
     }
 }
