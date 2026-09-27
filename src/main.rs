@@ -4,6 +4,7 @@ pub mod camera_follow;
 pub mod ceramic_visuals;
 pub mod ceramics;
 pub mod drying_rack;
+pub mod economy;
 pub mod game_clock;
 pub mod interaction;
 pub mod inventory;
@@ -21,6 +22,7 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugins(game_clock::GameClockPlugin)
+        .add_plugins(economy::EconomyPlugin)
         .add_plugins(planet_surface::PlanetSurfacePlugin)
         .add_plugins(ceramic_visuals::CeramicVisualPlugin)
         .add_plugins(resource_nodes::ResourceNodePlugin)
