@@ -2,6 +2,7 @@ use bevy::prelude::*;
 
 pub mod camera_follow;
 pub mod ceramics;
+pub mod drying_rack;
 pub mod game_clock;
 pub mod interaction;
 pub mod inventory;
@@ -20,6 +21,7 @@ fn main() {
         .add_plugins(resource_nodes::ResourceNodePlugin)
         .add_plugins(interaction::InteractionPlugin)
         .add_plugins(workbench::WorkbenchPlugin)
+        .add_plugins(drying_rack::DryingRackPlugin)
         .add_plugins(player_movement::PlayerMovementPlugin)
         .add_plugins(camera_follow::SurfaceCameraFollowPlugin)
         .run();
