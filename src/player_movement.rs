@@ -42,7 +42,7 @@ impl Plugin for PlayerMovementPlugin {
     }
 }
 
-fn move_surface_players(
+pub(crate) fn move_surface_players(
     keyboard: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     cameras: Query<&GlobalTransform, With<Camera3d>>,
