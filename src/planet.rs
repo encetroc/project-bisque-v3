@@ -4,8 +4,53 @@
 //! of any world-space transform or planet orientation. Out-of-range positions
 //! are rejected; they are never silently clamped to a different tile.
 
+use bevy::math::Vec3;
+
 /// Number of tiles along each edge of every cube face in the POC planet.
 pub const TILES_PER_FACE: u8 = 24;
+
+/// Starting planet radius recommended by the POC specification.
+pub const DEFAULT_PLANET_RADIUS: f32 = 40.0;
+
+/// Convert face-local cube coordinates in `[-1, 1]` to a cube-surface point.
+///
+/// Each face uses a fixed orientation so the same cube corner has the same
+/// coordinates regardless of which face is used to name it.
+pub fn cube_face_point(face: PlanetFace, u: f32, v: f32) -> Option<Vec3> {
+    if !u.is_finite() || !v.is_finite() || !(-1.0..=1.0).contains(&u) || !(-1.0..=1.0).contains(&v)
+    {
+        return None;
+    }
+
+    Some(match face {
+        PlanetFace::PositiveX => Vec3::new(1.0, v, -u),
+        PlanetFace::NegativeX => Vec3::new(-1.0, v, u),
+        PlanetFace::PositiveY => Vec3::new(u, 1.0, -v),
+        PlanetFace::NegativeY => Vec3::new(u, -1.0, v),
+        PlanetFace::PositiveZ => Vec3::new(u, v, 1.0),
+        PlanetFace::NegativeZ => Vec3::new(-u, v, -1.0),
+    })
+}
+
+/// Project a nonzero cube point onto a sphere of `radius` world units.
+///
+/// Returns `None` for non-finite/zero points or non-positive/non-finite radii.
+pub fn project_cube_to_sphere(cube_point: Vec3, radius: f32) -> Option<Vec3> {
+    if !cube_point.is_finite()
+        || cube_point.length_squared() == 0.0
+        || !radius.is_finite()
+        || radius <= 0.0
+    {
+        return None;
+    }
+
+    Some(cube_point.normalize() * radius)
+}
+
+/// Project a face-local point onto the planet sphere using the requested radius.
+pub fn project_face_to_sphere(face: PlanetFace, u: f32, v: f32, radius: f32) -> Option<Vec3> {
+    project_cube_to_sphere(cube_face_point(face, u, v)?, radius)
+}
 
 /// One of the six faces of the cube used to define the planet's surface grid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -143,6 +188,66 @@ impl Default for PlanetTile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cube_faces_project_to_requested_radius_with_finite_symmetric_results() {
+        for face in PlanetFace::ALL {
+            let point = project_face_to_sphere(face, 0.25, -0.5, DEFAULT_PLANET_RADIUS).unwrap();
+            assert!(point.is_finite());
+            assert!((point.length() - DEFAULT_PLANET_RADIUS).abs() < 1e-5);
+        }
+
+        let positive = project_face_to_sphere(PlanetFace::PositiveZ, 0.4, -0.2, 17.0).unwrap();
+        let negative = project_face_to_sphere(PlanetFace::NegativeZ, 0.4, 0.2, 17.0).unwrap();
+        assert!((positive + negative).length() < 1e-5);
+
+        let center = project_cube_to_sphere(Vec3::X, 0.0);
+        assert!(center.is_none());
+        assert!(project_cube_to_sphere(Vec3::ZERO, DEFAULT_PLANET_RADIUS).is_none());
+        assert!(project_face_to_sphere(PlanetFace::PositiveX, f32::NAN, 0.0, 40.0).is_none());
+    }
+
+    #[test]
+    fn all_face_representations_of_cube_corners_project_identically() {
+        for x in [-1.0, 1.0] {
+            for y in [-1.0, 1.0] {
+                for z in [-1.0, 1.0] {
+                    let mut projections = Vec::new();
+                    if x > 0.0 {
+                        projections.push(
+                            project_face_to_sphere(PlanetFace::PositiveX, -z, y, 40.0).unwrap(),
+                        );
+                    } else {
+                        projections.push(
+                            project_face_to_sphere(PlanetFace::NegativeX, z, y, 40.0).unwrap(),
+                        );
+                    }
+                    if y > 0.0 {
+                        projections.push(
+                            project_face_to_sphere(PlanetFace::PositiveY, x, -z, 40.0).unwrap(),
+                        );
+                    } else {
+                        projections.push(
+                            project_face_to_sphere(PlanetFace::NegativeY, x, z, 40.0).unwrap(),
+                        );
+                    }
+                    if z > 0.0 {
+                        projections.push(
+                            project_face_to_sphere(PlanetFace::PositiveZ, x, y, 40.0).unwrap(),
+                        );
+                    } else {
+                        projections.push(
+                            project_face_to_sphere(PlanetFace::NegativeZ, -x, y, 40.0).unwrap(),
+                        );
+                    }
+
+                    for projection in &projections[1..] {
+                        assert!(projections[0].distance(*projection) < 1e-5);
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn all_six_faces_are_enumerated() {
