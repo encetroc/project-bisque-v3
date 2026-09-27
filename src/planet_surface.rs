@@ -6,6 +6,7 @@ use crate::planet::{
     DEFAULT_PLANET_RADIUS, PlanetFace, PlanetTile, TILES_PER_FACE, TileCoordinate,
     project_face_to_sphere, sample_tile_surface,
 };
+use crate::player_movement::SurfacePlayer;
 use crate::surface_transform::{SurfaceLocation, surface_transform};
 
 /// Number of logical tiles across the complete planet.
@@ -239,6 +240,11 @@ fn spawn_planet_surface(
         Name::new("Planet test player placeholder"),
         Mesh3d(meshes.add(Capsule3d::new(0.65, 2.0))),
         MeshMaterial3d(materials.add(Color::srgb(0.95, 0.82, 0.62))),
+        SurfacePlayer::new(
+            SurfaceLocation::new(start_surface.normal, 1.6),
+            Vec3::X,
+            DEFAULT_PLANET_RADIUS,
+        ),
         player_transform,
     ));
 
@@ -250,7 +256,7 @@ fn spawn_planet_surface(
     ));
     commands.spawn((
         Name::new("Planet test controls"),
-        Text::new("Planet geometry test  |  F: face colors  T: tile boundaries  N: normals  |  Arrow keys: orbit  +/-: zoom  Home: reset"),
+        Text::new("Planet test  |  WASD: walk  Shift: run  |  F: face colors  T: tile boundaries  N: normals  |  Arrows: orbit  +/-: zoom  Home: reset"),
         Node {
             position_type: PositionType::Absolute,
             top: px(12),
