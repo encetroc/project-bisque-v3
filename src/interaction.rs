@@ -93,8 +93,11 @@ fn spawn_prompt(mut commands: Commands) {
             position_type: PositionType::Absolute,
             bottom: px(16),
             left: px(16),
+            padding: UiRect::axes(px(12), px(8)),
             ..default()
         },
+        TextColor(Color::WHITE),
+        BackgroundColor(Color::srgba(0.04, 0.06, 0.08, 0.88)),
     ));
 }
 
@@ -253,7 +256,7 @@ fn choose_interaction<'a>(
         })
         .map(|(_, _, candidate)| InteractionPromptData {
             entity: candidate.entity,
-            text: format!("[E] {}", candidate.prompt),
+            text: format!("[E / Left Click] {}", candidate.prompt),
         })
 }
 
@@ -354,7 +357,7 @@ mod tests {
             selected.entity,
             Entity::from_raw_u32(2).expect("test entity index is valid")
         );
-        assert_eq!(selected.text, "[E] Gather clay");
+        assert_eq!(selected.text, "[E / Left Click] Gather clay");
     }
 
     #[test]
@@ -425,6 +428,42 @@ mod tests {
     }
 
     #[test]
+    fn prompt_text_tracks_selected_target_changes_and_clears_headlessly() {
+        let mut app = App::new();
+        app.init_resource::<SelectedInteraction>()
+            .add_systems(Update, update_prompt_text);
+        let label = app
+            .world_mut()
+            .spawn((InteractionPromptText, Text::new("")))
+            .id();
+        let first_target = app.world_mut().spawn_empty().id();
+        app.world_mut().resource_mut::<SelectedInteraction>().0 = Some(InteractionPromptData {
+            entity: first_target,
+            text: "[E / Left Click] Gather clay".to_owned(),
+        });
+        app.update();
+        assert_eq!(
+            app.world().get::<Text>(label).unwrap().0,
+            "[E / Left Click] Gather clay"
+        );
+
+        let next_target = app.world_mut().spawn_empty().id();
+        app.world_mut().resource_mut::<SelectedInteraction>().0 = Some(InteractionPromptData {
+            entity: next_target,
+            text: "[E / Left Click] Use kiln".to_owned(),
+        });
+        app.update();
+        assert_eq!(
+            app.world().get::<Text>(label).unwrap().0,
+            "[E / Left Click] Use kiln"
+        );
+
+        app.world_mut().resource_mut::<SelectedInteraction>().0 = None;
+        app.update();
+        assert_eq!(app.world().get::<Text>(label).unwrap().0, "");
+    }
+
+    #[test]
     fn left_click_dispatches_the_same_selected_target_as_e() {
         let mut app = App::new();
         app.add_message::<InteractionRequested>()
@@ -435,7 +474,7 @@ mod tests {
         let target = app.world_mut().spawn_empty().id();
         app.world_mut().resource_mut::<SelectedInteraction>().0 = Some(InteractionPromptData {
             entity: target,
-            text: "[E] Test interaction".to_owned(),
+            text: "[E / Left Click] Test interaction".to_owned(),
         });
         app.world_mut()
             .resource_mut::<ButtonInput<MouseButton>>()
