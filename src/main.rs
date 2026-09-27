@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 
 pub mod camera_follow;
+pub mod ceramics;
 pub mod game_clock;
 pub mod interaction;
 pub mod inventory;
