@@ -226,7 +226,7 @@ fn spawn_planet_surface(
 
     commands.spawn((
         Name::new("Planet test controls"),
-        Text::new("Planet test  |  WASD: walk  Shift: run  |  F: face colors  T: tile boundaries  N: normals"),
+        Text::new("Planet test  |  WASD: walk  Shift: run  |  Q/E: camera yaw  Wheel: zoom (10–16)  |  F: face colors  T: tile boundaries  N: normals"),
         Node {
             position_type: PositionType::Absolute,
             top: px(12),

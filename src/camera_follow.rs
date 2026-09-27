@@ -1,11 +1,19 @@
 //! A soft, surface-oriented camera rig for the spherical planet.
 
-use bevy::prelude::*;
+use bevy::{input::mouse::MouseWheel, prelude::*};
 
 use crate::player_movement::SurfacePlayer;
 
-/// Distance from the player to the camera, in world units.
+/// Default distance from the player to the camera, in world units.
 pub const CAMERA_DISTANCE: f32 = 12.0;
+/// Nearest allowed camera distance, in world units.
+pub const MIN_CAMERA_DISTANCE: f32 = 10.0;
+/// Farthest allowed camera distance, in world units.
+pub const MAX_CAMERA_DISTANCE: f32 = 16.0;
+/// Camera yaw speed while Q/E is held, in radians per second.
+pub const CAMERA_YAW_SPEED: f32 = 1.5;
+/// Camera distance change for each mouse-wheel unit.
+pub const CAMERA_ZOOM_SPEED: f32 = 1.0;
 /// Camera elevation above the local tangent plane.
 pub const CAMERA_PITCH: f32 = 50.0_f32.to_radians();
 /// Perspective field of view, in radians.
@@ -16,6 +24,7 @@ const FOLLOW_SPEED: f32 = 8.0;
 struct CameraTarget {
     pivot: Entity,
     initialized: bool,
+    yaw: f32,
 }
 
 #[derive(Component)]
@@ -39,6 +48,7 @@ fn spawn_camera_rig(mut commands: Commands) {
             CameraTarget {
                 pivot,
                 initialized: false,
+                yaw: 0.0,
             },
             Transform::IDENTITY,
         ))
@@ -64,9 +74,12 @@ fn spawn_camera_rig(mut commands: Commands) {
 
 fn follow_surface_player(
     time: Res<Time>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut wheel: MessageReader<MouseWheel>,
     players: Query<(&SurfacePlayer, &Transform)>,
     mut targets: Query<(&mut Transform, &mut CameraTarget)>,
     mut pivots: Query<&mut Transform, With<CameraPivot>>,
+    mut cameras: Query<&mut Transform, (With<Camera3d>, Without<CameraPivot>)>,
 ) {
     let Ok((_player, player_transform)) = players.single() else {
         return;
@@ -89,9 +102,31 @@ fn follow_surface_player(
         );
     }
 
-    // The surface movement transform is built from the sampled normal and tangent
-    // heading, so copying its rotation carries the camera frame over the sphere.
-    pivot_transform.rotation = player_transform.rotation;
+    let yaw_input =
+        f32::from(keyboard.pressed(KeyCode::KeyE)) - f32::from(keyboard.pressed(KeyCode::KeyQ));
+    target.yaw = wrap_yaw(target.yaw + yaw_input * CAMERA_YAW_SPEED * time.delta_secs());
+
+    // The player's rotation supplies the complete local tangent frame. Applying
+    // yaw around that frame's local Y keeps camera-up aligned with surface-up.
+    pivot_transform.rotation = player_transform.rotation * Quat::from_rotation_y(target.yaw);
+
+    let wheel_delta: f32 = wheel.read().map(|event| event.y).sum();
+    if wheel_delta != 0.0 {
+        if let Ok(mut camera_transform) = cameras.single_mut() {
+            let distance = camera_transform.translation.length();
+            let zoomed = zoom_distance(distance, wheel_delta);
+            camera_transform.translation =
+                camera_transform.translation.normalize_or_zero() * zoomed;
+        }
+    }
+}
+
+fn wrap_yaw(yaw: f32) -> f32 {
+    yaw.rem_euclid(std::f32::consts::TAU)
+}
+
+fn zoom_distance(current: f32, wheel_delta: f32) -> f32 {
+    (current - wheel_delta * CAMERA_ZOOM_SPEED).clamp(MIN_CAMERA_DISTANCE, MAX_CAMERA_DISTANCE)
 }
 
 fn smooth_follow(current: Vec3, desired: Vec3, delta_secs: f32) -> Vec3 {
@@ -153,5 +188,53 @@ mod tests {
         );
         assert!((offset.length() - CAMERA_DISTANCE).abs() < 1e-5);
         assert!(offset.y > 0.0 && offset.z > 0.0);
+    }
+
+    #[test]
+    fn yaw_is_wrapped_and_preserves_surface_up_at_seams_and_poles() {
+        for normal in [
+            Vec3::new(0.2, 0.96, 0.1).normalize(),
+            Vec3::new(0.7, -0.3, 0.64).normalize(),
+            Vec3::new(0.001, 1.0, 0.0).normalize(),
+            Vec3::new(-1.0, 0.0, 0.0),
+        ] {
+            let reference = if normal.dot(Vec3::X).abs() > 0.9 {
+                Vec3::Z
+            } else {
+                Vec3::X
+            };
+            let heading = (reference - normal * reference.dot(normal)).normalize();
+            let surface = crate::planet::SurfaceSample {
+                position: normal * 40.0,
+                height: 0.0,
+                normal,
+            };
+            let player_rotation = surface_transform(
+                SurfaceLocation::new(normal, 0.0),
+                Vec3::ZERO,
+                40.0,
+                &surface,
+                heading,
+            )
+            .unwrap()
+            .rotation;
+            let yawed_rotation = player_rotation * Quat::from_rotation_y(1.2);
+            assert!((yawed_rotation * Vec3::Y).dot(normal) > 0.9999);
+        }
+        let wrapped = (0.5 + 100.0 * std::f32::consts::TAU).rem_euclid(std::f32::consts::TAU);
+        assert!((wrapped - 0.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn zoom_is_clamped_to_the_configured_camera_limits() {
+        assert_eq!(zoom_distance(CAMERA_DISTANCE, 1.0), 11.0);
+        assert_eq!(zoom_distance(MIN_CAMERA_DISTANCE, 1.0), MIN_CAMERA_DISTANCE);
+        assert_eq!(
+            zoom_distance(MAX_CAMERA_DISTANCE, -1.0),
+            MAX_CAMERA_DISTANCE
+        );
+        assert_eq!(zoom_distance(13.0, 100.0), MIN_CAMERA_DISTANCE);
+        assert_eq!(zoom_distance(13.0, -100.0), MAX_CAMERA_DISTANCE);
+        assert_eq!((MIN_CAMERA_DISTANCE, MAX_CAMERA_DISTANCE), (10.0, 16.0));
     }
 }
