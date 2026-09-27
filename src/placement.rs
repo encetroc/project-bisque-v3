@@ -5,6 +5,7 @@ use bevy::{input::mouse::MouseButton, prelude::*};
 use crate::{
     ceramic_visuals::{spawn_ceramic_ghost, spawn_ceramic_visual},
     ceramics::CeramicItem,
+    interaction::{Interactable, InteractionRequested},
     inventory::{CeramicObjectId, Inventory, InventorySlot},
     planet::DEFAULT_PLANET_RADIUS,
     surface_transform::SurfaceLocation,
@@ -48,7 +49,13 @@ impl Plugin for PlacementPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PlacementMode>()
             .add_systems(Startup, spawn_placement_help)
-            .add_systems(Update, placement_controls);
+            .add_systems(
+                Update,
+                (
+                    placement_controls,
+                    pick_up_placed_objects.after(crate::interaction::dispatch_interaction),
+                ),
+            );
     }
 }
 
@@ -135,6 +142,42 @@ pub enum PlacementError {
     NotInInventory,
     MissingItemData,
     InvalidSurface,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickupError {
+    InventoryFull,
+    AlreadyInInventory,
+}
+
+/// Return a player-placed ceramic without changing its defining data.
+pub fn pick_up_placed_object(
+    inventory: &mut Inventory,
+    placed: PlayerPlacedObject,
+) -> Result<CeramicItem, PickupError> {
+    if inventory.contains_ceramic(placed.item.id) {
+        return Err(PickupError::AlreadyInInventory);
+    }
+    if !inventory.add_ceramic(placed.item.id) {
+        return Err(PickupError::InventoryFull);
+    }
+    Ok(placed.item)
+}
+
+fn pick_up_placed_objects(
+    mut commands: Commands,
+    mut requests: MessageReader<InteractionRequested>,
+    mut inventory: ResMut<Inventory>,
+    placed_objects: Query<&PlayerPlacedObject>,
+) {
+    for request in requests.read() {
+        let Ok(placed) = placed_objects.get(request.target) else {
+            continue;
+        };
+        if pick_up_placed_object(&mut inventory, *placed).is_ok() {
+            commands.entity(request.target).despawn();
+        }
+    }
 }
 
 fn spawn_placement_help(mut commands: Commands) {
@@ -269,7 +312,9 @@ fn placement_controls(
                         placed.item,
                         placed_transform,
                     );
-                    commands.entity(entity).insert(placed);
+                    commands
+                        .entity(entity)
+                        .insert((placed, Interactable::new("Pick up ceramic")));
                     mode.active = false;
                     mode.selected = None;
                 }
@@ -364,5 +409,103 @@ mod tests {
         assert_eq!(placed.item.id, id);
         assert!(!inventory.contains_ceramic(id));
         assert_eq!(placed.location, surface.location);
+    }
+
+    #[test]
+    fn placed_ceramic_round_trips_through_interaction_with_all_properties() {
+        let item = CeramicItemTemplate {
+            form: CeramicForm::Vase,
+            clay: ClayMaterial::Red,
+            glaze: Glaze::Blue,
+            state: crate::ceramics::ProcessingState::Dry,
+        }
+        .instantiate(CeramicObjectId(19));
+        let surface = raycast_planet_surface(Vec3::Z * 50.0, Vec3::NEG_Z, 40.0).unwrap();
+        let mut inventory = Inventory::default();
+        inventory.add_ceramic(item.id);
+        let placed =
+            place_inventory_ceramic(&mut inventory, &[item], item.id, surface, 0.75).unwrap();
+        let mut app = App::new();
+        app.add_message::<InteractionRequested>()
+            .init_resource::<Inventory>()
+            .init_resource::<CraftedCeramics>()
+            .add_systems(Update, pick_up_placed_objects);
+        *app.world_mut().resource_mut::<Inventory>() = inventory;
+        app.world_mut().resource_mut::<CraftedCeramics>().items = vec![item];
+        let entity = app
+            .world_mut()
+            .spawn((placed, Interactable::new("Pick up ceramic")))
+            .id();
+        app.world_mut()
+            .write_message(InteractionRequested { target: entity });
+        app.update();
+
+        assert!(!app.world().entities().contains(entity));
+        assert!(
+            app.world()
+                .resource::<Inventory>()
+                .contains_ceramic(item.id)
+        );
+        assert_eq!(app.world().resource::<CraftedCeramics>().items, vec![item]);
+        assert_eq!(placed.item, item);
+        assert_eq!(placed.rotation, 0.75);
+        assert_eq!(placed.location, surface.location);
+    }
+
+    #[test]
+    fn full_inventory_refuses_pickup_and_keeps_object_in_world() {
+        let item = fired(21);
+        let placed = PlayerPlacedObject {
+            item,
+            location: SurfaceLocation::new(Vec3::Z, 0.08),
+            rotation: 0.0,
+        };
+        let mut app = App::new();
+        app.add_message::<InteractionRequested>()
+            .init_resource::<Inventory>()
+            .add_systems(Update, pick_up_placed_objects);
+        {
+            let mut inventory = app.world_mut().resource_mut::<Inventory>();
+            for id in 1..=crate::inventory::INVENTORY_SLOT_COUNT as u64 {
+                assert!(inventory.add_ceramic(CeramicObjectId(id)));
+            }
+        }
+        let entity = app
+            .world_mut()
+            .spawn((placed, Interactable::new("Pick up ceramic")))
+            .id();
+        app.world_mut()
+            .write_message(InteractionRequested { target: entity });
+        app.update();
+
+        assert!(app.world().entities().contains(entity));
+        assert!(
+            !app.world()
+                .resource::<Inventory>()
+                .contains_ceramic(item.id)
+        );
+    }
+
+    #[test]
+    fn non_player_placed_interactables_are_not_pickup_eligible() {
+        let mut app = App::new();
+        app.add_message::<InteractionRequested>()
+            .init_resource::<Inventory>()
+            .add_systems(Update, pick_up_placed_objects);
+        let entity = app
+            .world_mut()
+            .spawn(Interactable::new("Other action"))
+            .id();
+        app.world_mut()
+            .write_message(InteractionRequested { target: entity });
+        app.update();
+        assert!(app.world().entities().contains(entity));
+        assert!(
+            app.world()
+                .resource::<Inventory>()
+                .slots()
+                .iter()
+                .all(|slot| *slot == InventorySlot::Empty)
+        );
     }
 }

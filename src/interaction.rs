@@ -152,7 +152,7 @@ fn choose_interaction<'a>(
         })
 }
 
-fn dispatch_interaction(
+pub(crate) fn dispatch_interaction(
     keyboard: Res<ButtonInput<KeyCode>>,
     selected: Res<SelectedInteraction>,
     mut requests: MessageWriter<InteractionRequested>,
