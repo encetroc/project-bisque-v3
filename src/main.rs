@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 
+pub mod camera_follow;
 pub mod planet;
 pub mod planet_surface;
 pub mod player_movement;
@@ -10,5 +11,6 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .add_plugins(planet_surface::PlanetSurfacePlugin)
         .add_plugins(player_movement::PlayerMovementPlugin)
+        .add_plugins(camera_follow::SurfaceCameraFollowPlugin)
         .run();
 }

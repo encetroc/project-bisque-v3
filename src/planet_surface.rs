@@ -24,8 +24,6 @@ const FACE_DEBUG_COLORS: [Color; 6] = [
 const SURFACE_COLOR: Color = Color::srgb(0.34, 0.58, 0.30);
 const TILE_LINE_COLOR: Color = Color::srgb(0.025, 0.025, 0.025);
 const NORMAL_LINE_COLOR: Color = Color::srgb(1.0, 0.95, 0.25);
-const ORBIT_SPEED: f32 = 1.5;
-const ZOOM_SPEED: f32 = 35.0;
 
 /// CPU-side mesh data with face identity retained for inspection and tests.
 #[derive(Debug, Clone)]
@@ -129,35 +127,14 @@ enum PlanetOverlay {
     SurfaceNormals,
 }
 
-#[derive(Component)]
-struct PlanetTestCamera;
-
-#[derive(Resource)]
-struct PlanetCameraOrbit {
-    yaw: f32,
-    pitch: f32,
-    distance: f32,
-}
-
-impl Default for PlanetCameraOrbit {
-    fn default() -> Self {
-        Self {
-            yaw: 0.55,
-            pitch: 0.38,
-            distance: 105.0,
-        }
-    }
-}
-
-/// Installs a geometry-only planet test scene, diagnostics, and an orbit camera.
+/// Installs the geometry-only planet test scene and its surface diagnostics.
 pub struct PlanetSurfacePlugin;
 
 impl Plugin for PlanetSurfacePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PlanetDebugMode>()
-            .init_resource::<PlanetCameraOrbit>()
             .add_systems(Startup, spawn_planet_surface)
-            .add_systems(Update, (toggle_planet_debug, orbit_planet_camera));
+            .add_systems(Update, toggle_planet_debug);
     }
 }
 
@@ -166,7 +143,6 @@ fn spawn_planet_surface(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mode: Res<PlanetDebugMode>,
-    orbit: Res<PlanetCameraOrbit>,
 ) {
     for (index, face) in PlanetFace::ALL.into_iter().enumerate() {
         let debug_color = FACE_DEBUG_COLORS[index];
@@ -249,14 +225,8 @@ fn spawn_planet_surface(
     ));
 
     commands.spawn((
-        Name::new("Planet test orbit camera"),
-        Camera3d::default(),
-        PlanetTestCamera,
-        orbit_transform(&orbit),
-    ));
-    commands.spawn((
         Name::new("Planet test controls"),
-        Text::new("Planet test  |  WASD: walk  Shift: run  |  F: face colors  T: tile boundaries  N: normals  |  Arrows: orbit  +/-: zoom  Home: reset"),
+        Text::new("Planet test  |  WASD: walk  Shift: run  |  F: face colors  T: tile boundaries  N: normals"),
         Node {
             position_type: PositionType::Absolute,
             top: px(12),
@@ -352,49 +322,6 @@ fn toggle_planet_debug(
     }
 }
 
-fn orbit_planet_camera(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    time: Res<Time>,
-    mut orbit: ResMut<PlanetCameraOrbit>,
-    mut camera: Query<&mut Transform, With<PlanetTestCamera>>,
-) {
-    let delta = time.delta_secs();
-    if keyboard.pressed(KeyCode::ArrowLeft) {
-        orbit.yaw -= ORBIT_SPEED * delta;
-    }
-    if keyboard.pressed(KeyCode::ArrowRight) {
-        orbit.yaw += ORBIT_SPEED * delta;
-    }
-    if keyboard.pressed(KeyCode::ArrowUp) {
-        orbit.pitch = (orbit.pitch + ORBIT_SPEED * delta).min(1.48);
-    }
-    if keyboard.pressed(KeyCode::ArrowDown) {
-        orbit.pitch = (orbit.pitch - ORBIT_SPEED * delta).max(-1.48);
-    }
-    if keyboard.pressed(KeyCode::Equal) || keyboard.pressed(KeyCode::NumpadAdd) {
-        orbit.distance = (orbit.distance - ZOOM_SPEED * delta).max(55.0);
-    }
-    if keyboard.pressed(KeyCode::Minus) || keyboard.pressed(KeyCode::NumpadSubtract) {
-        orbit.distance = (orbit.distance + ZOOM_SPEED * delta).min(180.0);
-    }
-    if keyboard.just_pressed(KeyCode::Home) {
-        *orbit = PlanetCameraOrbit::default();
-    }
-    if let Ok(mut transform) = camera.single_mut() {
-        *transform = orbit_transform(&orbit);
-    }
-}
-
-fn orbit_transform(orbit: &PlanetCameraOrbit) -> Transform {
-    let horizontal = orbit.distance * orbit.pitch.cos();
-    let position = Vec3::new(
-        horizontal * orbit.yaw.sin(),
-        orbit.distance * orbit.pitch.sin(),
-        horizontal * orbit.yaw.cos(),
-    );
-    Transform::from_translation(position).looking_at(Vec3::ZERO, Vec3::Y)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,7 +364,6 @@ mod tests {
         app.insert_resource(Assets::<Mesh>::default());
         app.insert_resource(Assets::<StandardMaterial>::default());
         app.init_resource::<PlanetDebugMode>();
-        app.init_resource::<PlanetCameraOrbit>();
         app.add_systems(Startup, spawn_planet_surface);
         app.update();
 
