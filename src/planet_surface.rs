@@ -4,8 +4,9 @@ use bevy::{asset::RenderAssetUsages, mesh::PrimitiveTopology, prelude::*};
 
 use crate::planet::{
     DEFAULT_PLANET_RADIUS, PlanetFace, PlanetTile, TILES_PER_FACE, TileCoordinate,
-    project_face_to_sphere,
+    project_face_to_sphere, sample_tile_surface,
 };
+use crate::surface_transform::{SurfaceLocation, surface_transform};
 
 /// Number of logical tiles across the complete planet.
 pub const PLANET_TILE_COUNT: usize =
@@ -218,12 +219,27 @@ fn spawn_planet_surface(
         ));
     }
 
-    // The neutral capsule marks the starting surface location without requiring gameplay.
+    // The neutral capsule marks a non-equatorial location using the shared
+    // surface transform API, just like future actors and placed props.
+    let start_tile = PlanetTile::new(
+        TileCoordinate::new(PlanetFace::PositiveY, 11, 14)
+            .expect("test player tile is within the face"),
+    );
+    let start_surface = sample_tile_surface(&start_tile, DEFAULT_PLANET_RADIUS)
+        .expect("test planet radius is valid");
+    let player_transform = surface_transform(
+        SurfaceLocation::new(start_surface.normal, 1.6),
+        Vec3::ZERO,
+        DEFAULT_PLANET_RADIUS,
+        &start_surface,
+        Vec3::X,
+    )
+    .expect("test player location and tangent heading are valid");
     commands.spawn((
         Name::new("Planet test player placeholder"),
         Mesh3d(meshes.add(Capsule3d::new(0.65, 2.0))),
         MeshMaterial3d(materials.add(Color::srgb(0.95, 0.82, 0.62))),
-        Transform::from_xyz(0.0, DEFAULT_PLANET_RADIUS + 1.6, 0.0),
+        player_transform,
     ));
 
     commands.spawn((

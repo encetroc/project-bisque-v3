@@ -2,6 +2,7 @@ use bevy::prelude::*;
 
 pub mod planet;
 pub mod planet_surface;
+pub mod surface_transform;
 
 fn main() {
     App::new()
