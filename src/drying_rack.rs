@@ -4,9 +4,11 @@ use bevy::prelude::*;
 
 use crate::{
     ceramics::{CeramicItem, ProcessingState},
+    economy::Wallet,
     game_clock::GameClock,
     interaction::{Interactable, InteractionRequested},
     inventory::{CeramicObjectId, Inventory},
+    machine_upgrades::{MachineUpgradeCost, MachineUpgradeError, pay_machine_upgrade},
     planet::{DEFAULT_PLANET_RADIUS, PlanetFace, PlanetTile, TileCoordinate, sample_tile_surface},
     surface_transform::{SurfaceLocation, surface_transform},
     workbench::CraftedCeramics,
@@ -14,6 +16,12 @@ use crate::{
 
 /// The base rack holds two ceramics; drying takes four in-game hours.
 pub const DRYING_RACK_CAPACITY: usize = 2;
+pub const DRYING_RACK_MAX_CAPACITY: usize = 4;
+pub const DRYING_RACK_UPGRADE_COST: MachineUpgradeCost = MachineUpgradeCost {
+    coins: 20,
+    material: crate::planet::ResourceType::Wood,
+    quantity: 5,
+};
 pub const DRYING_TIME_MINUTES: f64 = 4.0 * 60.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -25,17 +33,36 @@ pub struct DryingJob {
 /// Contents of the base drying rack. Completed items remain in their slots until collected.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Default)]
 pub struct DryingRack {
-    slots: [Option<DryingJob>; DRYING_RACK_CAPACITY],
+    slots: [Option<DryingJob>; DRYING_RACK_MAX_CAPACITY],
+    pub upgraded: bool,
 }
 
 impl DryingRack {
-    pub fn slots(&self) -> &[Option<DryingJob>; DRYING_RACK_CAPACITY] {
+    pub fn slots(&self) -> &[Option<DryingJob>; DRYING_RACK_MAX_CAPACITY] {
         &self.slots
     }
 
     pub fn occupied(&self) -> usize {
         self.slots.iter().filter(|slot| slot.is_some()).count()
     }
+
+    pub const fn capacity(&self) -> usize {
+        if self.upgraded {
+            DRYING_RACK_MAX_CAPACITY
+        } else {
+            DRYING_RACK_CAPACITY
+        }
+    }
+}
+
+pub fn upgrade_drying_rack(
+    rack: &mut DryingRack,
+    inventory: &mut Inventory,
+    wallet: &mut Wallet,
+) -> Result<(), MachineUpgradeError> {
+    pay_machine_upgrade(rack.upgraded, DRYING_RACK_UPGRADE_COST, inventory, wallet)?;
+    rack.upgraded = true;
+    Ok(())
 }
 
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -81,7 +108,10 @@ pub fn insert_greenware(
     if !inventory.contains_ceramic(object) {
         return Err(RackError::NotInInventory);
     }
-    let Some(slot) = rack.slots.iter().position(Option::is_none) else {
+    let Some(slot) = rack.slots[..rack.capacity()]
+        .iter()
+        .position(Option::is_none)
+    else {
         return Err(RackError::Full);
     };
     assert!(
@@ -129,6 +159,8 @@ impl Plugin for DryingRackPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DryingRackUse>()
             .init_resource::<RackFeedback>()
+            .init_resource::<Wallet>()
+            .init_resource::<Wallet>()
             .add_systems(Startup, (spawn_rack, spawn_help_text))
             .add_systems(
                 Update,
@@ -206,7 +238,7 @@ fn spawn_rack(
                 Transform::from_xyz(0.0, y, 0.0),
             ));
         }
-        for (slot, x) in [-0.55, 0.55].into_iter().enumerate() {
+        for (slot, x) in [-0.75, -0.25, 0.25, 0.75].into_iter().enumerate() {
             children.spawn((
                 Name::new(format!("Drying rack slot {slot}")),
                 RackSlotVisual(slot),
@@ -261,6 +293,7 @@ fn control_rack(
     mut inventory: ResMut<Inventory>,
     mut crafted: ResMut<CraftedCeramics>,
     clock: Res<GameClock>,
+    mut wallet: ResMut<Wallet>,
     mut feedback: ResMut<RackFeedback>,
 ) {
     let Some(entity) = active.0 else { return };
@@ -269,21 +302,36 @@ fn control_rack(
         feedback.0 = None;
         return;
     }
-    if !keyboard.just_pressed(KeyCode::Enter) {
-        return;
-    }
     let Ok(mut rack) = racks.get_mut(entity) else {
         active.0 = None;
         return;
     };
-    if let Some(job) = rack
-        .slots
+    if keyboard.just_pressed(KeyCode::KeyU) {
+        feedback.0 = Some(
+            match upgrade_drying_rack(&mut rack, &mut inventory, &mut wallet) {
+                Ok(()) => "Drying rack upgraded to 4 slots.".to_owned(),
+                Err(MachineUpgradeError::AlreadyUpgraded) => {
+                    "Drying rack is already upgraded.".to_owned()
+                }
+                Err(MachineUpgradeError::InsufficientCoins) => {
+                    "Rack upgrade needs 20 coins.".to_owned()
+                }
+                Err(MachineUpgradeError::InsufficientMaterials) => {
+                    "Rack upgrade needs 5 wood.".to_owned()
+                }
+            },
+        );
+        return;
+    }
+    if !keyboard.just_pressed(KeyCode::Enter) {
+        return;
+    }
+    if let Some(job) = rack.slots[..rack.capacity()]
         .iter()
         .flatten()
         .find(|job| game_minutes(&clock) - job.started_at >= DRYING_TIME_MINUTES)
     {
-        let slot = rack
-            .slots
+        let slot = rack.slots[..rack.capacity()]
             .iter()
             .position(|candidate| *candidate == Some(*job))
             .unwrap();
@@ -339,8 +387,9 @@ fn update_help_text(
     let message = if let Some(entity) = active.0 {
         if let Ok(rack) = racks.get(entity) {
             format!(
-                "Drying rack ({}/2) — Enter: place greenware / collect dry item | Esc: close{}",
+                "Drying rack ({}/{}) — U Upgrade (20 coins + 5 wood) | Enter: place greenware / collect dry item | Esc: close{}",
                 rack.occupied(),
+                rack.capacity(),
                 feedback
                     .0
                     .as_ref()
@@ -531,5 +580,53 @@ mod tests {
         );
         assert_eq!(rack.occupied(), 1);
         assert_eq!(objects[0].state(), ProcessingState::Dry);
+    }
+
+    #[test]
+    fn rack_upgrade_expands_capacity_once_and_charges_coins_and_wood() {
+        let mut rack = DryingRack::default();
+        let mut inventory = Inventory::default();
+        let mut wallet = Wallet {
+            coins: DRYING_RACK_UPGRADE_COST.coins,
+        };
+        inventory.add_resource(
+            DRYING_RACK_UPGRADE_COST.material,
+            DRYING_RACK_UPGRADE_COST.quantity,
+        );
+        assert_eq!(rack.capacity(), 2);
+        upgrade_drying_rack(&mut rack, &mut inventory, &mut wallet).unwrap();
+        assert_eq!(rack.capacity(), 4);
+        assert_eq!(wallet.coins, 0);
+        assert_eq!(
+            inventory.resource_count(DRYING_RACK_UPGRADE_COST.material),
+            0
+        );
+        assert_eq!(
+            upgrade_drying_rack(&mut rack, &mut inventory, &mut wallet),
+            Err(MachineUpgradeError::AlreadyUpgraded)
+        );
+        assert_eq!(rack.capacity(), 4);
+        assert_eq!(wallet.coins, 0);
+    }
+
+    #[test]
+    fn rack_upgrade_insufficient_materials_preserve_all_payment_and_capacity() {
+        let mut rack = DryingRack::default();
+        let mut inventory = Inventory::default();
+        let mut wallet = Wallet {
+            coins: DRYING_RACK_UPGRADE_COST.coins,
+        };
+        inventory.add_resource(
+            DRYING_RACK_UPGRADE_COST.material,
+            DRYING_RACK_UPGRADE_COST.quantity - 1,
+        );
+        let before = inventory.clone();
+        assert_eq!(
+            upgrade_drying_rack(&mut rack, &mut inventory, &mut wallet),
+            Err(MachineUpgradeError::InsufficientMaterials)
+        );
+        assert_eq!(wallet.coins, DRYING_RACK_UPGRADE_COST.coins);
+        assert_eq!(inventory, before);
+        assert_eq!(rack.capacity(), 2);
     }
 }

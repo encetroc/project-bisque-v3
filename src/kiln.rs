@@ -4,9 +4,12 @@ use bevy::prelude::*;
 
 use crate::{
     ceramics::{CeramicItem, ProcessingState},
+    economy::Wallet,
     game_clock::GameClock,
     interaction::{Interactable, InteractionRequested},
     inventory::{CeramicObjectId, Inventory},
+    machine_upgrades::{MachineUpgradeCost, MachineUpgradeError, pay_machine_upgrade},
+    planet::ResourceType,
     planet::{DEFAULT_PLANET_RADIUS, PlanetFace, PlanetTile, TileCoordinate, sample_tile_surface},
     surface_transform::{SurfaceLocation, surface_transform},
     workbench::CraftedCeramics,
@@ -14,6 +17,12 @@ use crate::{
 
 /// The base kiln holds two ceramics; firing takes four in-game hours.
 pub const KILN_CAPACITY: usize = 2;
+pub const KILN_MAX_CAPACITY: usize = 4;
+pub const KILN_UPGRADE_COST: MachineUpgradeCost = MachineUpgradeCost {
+    coins: 40,
+    material: ResourceType::IronMineral,
+    quantity: 3,
+};
 pub const FIRING_TIME_MINUTES: f64 = 4.0 * 60.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -25,17 +34,36 @@ pub struct FiringJob {
 /// Contents of the base kiln. Completed items remain in their slots until collected.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Default)]
 pub struct Kiln {
-    slots: [Option<FiringJob>; KILN_CAPACITY],
+    slots: [Option<FiringJob>; KILN_MAX_CAPACITY],
+    pub upgraded: bool,
 }
 
 impl Kiln {
-    pub fn slots(&self) -> &[Option<FiringJob>; KILN_CAPACITY] {
+    pub fn slots(&self) -> &[Option<FiringJob>; KILN_MAX_CAPACITY] {
         &self.slots
     }
 
     pub fn occupied(&self) -> usize {
         self.slots.iter().filter(|slot| slot.is_some()).count()
     }
+
+    pub const fn capacity(&self) -> usize {
+        if self.upgraded {
+            KILN_MAX_CAPACITY
+        } else {
+            KILN_CAPACITY
+        }
+    }
+}
+
+pub fn upgrade_kiln(
+    kiln: &mut Kiln,
+    inventory: &mut Inventory,
+    wallet: &mut Wallet,
+) -> Result<(), MachineUpgradeError> {
+    pay_machine_upgrade(kiln.upgraded, KILN_UPGRADE_COST, inventory, wallet)?;
+    kiln.upgraded = true;
+    Ok(())
 }
 
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -81,7 +109,10 @@ pub fn insert_dry_ceramic(
     if !inventory.contains_ceramic(object) {
         return Err(KilnError::NotInInventory);
     }
-    let Some(slot) = kiln.slots.iter().position(Option::is_none) else {
+    let Some(slot) = kiln.slots[..kiln.capacity()]
+        .iter()
+        .position(Option::is_none)
+    else {
         return Err(KilnError::Full);
     };
     assert!(
@@ -129,6 +160,7 @@ impl Plugin for KilnPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<KilnUse>()
             .init_resource::<KilnFeedback>()
+            .init_resource::<Wallet>()
             .add_systems(Startup, (spawn_kiln, spawn_help_text))
             .add_systems(
                 Update,
@@ -202,7 +234,7 @@ fn spawn_kiln(
             MeshMaterial3d(ceramic.clone()),
             Transform::from_xyz(0.0, -0.1, 0.72),
         ));
-        for (slot, x) in [-0.28, 0.28].into_iter().enumerate() {
+        for (slot, x) in [-0.42, -0.14, 0.14, 0.42].into_iter().enumerate() {
             children.spawn((
                 Name::new(format!("Kiln slot {slot}")),
                 KilnSlotVisual(slot),
@@ -257,6 +289,7 @@ fn control_kiln(
     mut inventory: ResMut<Inventory>,
     mut crafted: ResMut<CraftedCeramics>,
     clock: Res<GameClock>,
+    mut wallet: ResMut<Wallet>,
     mut feedback: ResMut<KilnFeedback>,
 ) {
     let Some(entity) = active.0 else { return };
@@ -272,9 +305,29 @@ fn control_kiln(
         active.0 = None;
         return;
     };
-    if let Some((slot, _)) = kiln.slots.iter().enumerate().find(|(_, job)| {
-        job.is_some_and(|job| game_minutes(&clock) - job.started_at >= FIRING_TIME_MINUTES)
-    }) {
+    if keyboard.just_pressed(KeyCode::KeyU) {
+        feedback.0 = Some(match upgrade_kiln(&mut kiln, &mut inventory, &mut wallet) {
+            Ok(()) => "Kiln upgraded to 4 slots.".to_owned(),
+            Err(MachineUpgradeError::AlreadyUpgraded) => "Kiln is already upgraded.".to_owned(),
+            Err(MachineUpgradeError::InsufficientCoins) => {
+                "Kiln upgrade needs 40 coins.".to_owned()
+            }
+            Err(MachineUpgradeError::InsufficientMaterials) => {
+                "Kiln upgrade needs 3 iron.".to_owned()
+            }
+        });
+        return;
+    }
+    if !keyboard.just_pressed(KeyCode::Enter) {
+        return;
+    }
+    if let Some((slot, _)) = kiln.slots[..kiln.capacity()]
+        .iter()
+        .enumerate()
+        .find(|(_, job)| {
+            job.is_some_and(|job| game_minutes(&clock) - job.started_at >= FIRING_TIME_MINUTES)
+        })
+    {
         feedback.0 = Some(
             match remove_fired_ceramic(&mut kiln, &mut inventory, &mut crafted.items, slot, &clock)
             {
@@ -326,7 +379,8 @@ fn update_help_text(
     let message = if let Some(entity) = active.0 {
         if let Ok(kiln) = kilns.get(entity) {
             format!(
-                "Kiln ({}/2) — Enter: fire dry ceramic / collect fired item | Esc: close{}",
+                "Kiln ({}/{}) — U Upgrade (40 coins + 3 iron) | Enter: fire dry ceramic / collect fired item | Esc: close{}",
+                kiln.capacity(),
                 kiln.occupied(),
                 feedback
                     .0
@@ -513,5 +567,53 @@ mod tests {
             app.world().resource::<CraftedCeramics>().items[0].state(),
             ProcessingState::Fired
         );
+    }
+
+    #[test]
+    fn kiln_upgrade_expands_capacity_once_and_charges_coins_and_iron() {
+        let mut kiln = Kiln::default();
+        let mut inventory = Inventory::default();
+        let mut wallet = Wallet {
+            coins: KILN_UPGRADE_COST.coins,
+        };
+        inventory.add_resource(KILN_UPGRADE_COST.material, KILN_UPGRADE_COST.quantity);
+        assert_eq!(kiln.capacity(), 2);
+        upgrade_kiln(&mut kiln, &mut inventory, &mut wallet).unwrap();
+        assert_eq!(kiln.capacity(), 4);
+        assert_eq!(wallet.coins, 0);
+        assert_eq!(inventory.resource_count(KILN_UPGRADE_COST.material), 0);
+        assert_eq!(
+            upgrade_kiln(&mut kiln, &mut inventory, &mut wallet),
+            Err(MachineUpgradeError::AlreadyUpgraded)
+        );
+        assert_eq!(kiln.capacity(), 4);
+        assert_eq!(wallet.coins, 0);
+    }
+
+    #[test]
+    fn kiln_upgrade_insufficient_coins_or_materials_is_atomic() {
+        let mut kiln = Kiln::default();
+        let mut inventory = Inventory::default();
+        let mut wallet = Wallet {
+            coins: KILN_UPGRADE_COST.coins - 1,
+        };
+        inventory.add_resource(KILN_UPGRADE_COST.material, KILN_UPGRADE_COST.quantity);
+        let before = inventory.clone();
+        assert_eq!(
+            upgrade_kiln(&mut kiln, &mut inventory, &mut wallet),
+            Err(MachineUpgradeError::InsufficientCoins)
+        );
+        assert_eq!(wallet.coins, KILN_UPGRADE_COST.coins - 1);
+        assert_eq!(inventory, before);
+        wallet.coins += 1;
+        inventory.remove_resource(KILN_UPGRADE_COST.material, 1);
+        let before = inventory.clone();
+        assert_eq!(
+            upgrade_kiln(&mut kiln, &mut inventory, &mut wallet),
+            Err(MachineUpgradeError::InsufficientMaterials)
+        );
+        assert_eq!(wallet.coins, KILN_UPGRADE_COST.coins);
+        assert_eq!(inventory, before);
+        assert_eq!(kiln.capacity(), 2);
     }
 }
