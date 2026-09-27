@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 
 pub mod camera_follow;
+pub mod ceramic_visuals;
 pub mod ceramics;
 pub mod drying_rack;
 pub mod game_clock;
@@ -19,6 +20,7 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .add_plugins(game_clock::GameClockPlugin)
         .add_plugins(planet_surface::PlanetSurfacePlugin)
+        .add_plugins(ceramic_visuals::CeramicVisualPlugin)
         .add_plugins(resource_nodes::ResourceNodePlugin)
         .add_plugins(interaction::InteractionPlugin)
         .add_plugins(workbench::WorkbenchPlugin)
