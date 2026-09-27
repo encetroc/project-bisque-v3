@@ -175,12 +175,64 @@ fn handle_upgrade_requests(
     }
 }
 
-pub(crate) fn bakery_slot_positions() -> [Vec3; 8] {
+pub(crate) fn apply_final_bakery_upgrade(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    property: Entity,
+    items: &[CeramicItem],
+) {
+    let wall = materials.add(Color::srgb(0.89, 0.70, 0.43));
+    let roof = materials.add(Color::srgb(0.70, 0.27, 0.17));
+    commands.entity(property).with_children(|children| {
+        children.spawn((
+            Name::new("Bakery expanded side room"),
+            BakeryExpansion,
+            Mesh3d(meshes.add(Cuboid::new(2.5, 1.8, 1.7))),
+            MeshMaterial3d(wall),
+            Transform::from_xyz(1.45, 0.9, -0.15),
+        ));
+        children.spawn((
+            Name::new("Bakery expanded roof"),
+            BakeryExpansion,
+            Mesh3d(meshes.add(Cuboid::new(2.9, 0.18, 2.5))),
+            MeshMaterial3d(roof),
+            Transform::from_xyz(0.72, 1.98, -0.02),
+        ));
+    });
+
+    let positions = bakery_slot_positions();
+    for (offset, item) in items.iter().copied().enumerate() {
+        let index = offset + 2;
+        let mut slot = NpcPlacementSlot::bakery(index);
+        slot.occupy(item)
+            .expect("the Baker's final-order ceramics fit the bakery slots");
+        let slot_entity = commands
+            .spawn((
+                Name::new(format!("Bakery ceramic slot {index}")),
+                slot,
+                Transform::from_translation(positions[index]),
+                ChildOf(property),
+            ))
+            .id();
+        let visual = crate::ceramic_visuals::spawn_ceramic_visual(
+            commands,
+            meshes,
+            materials,
+            item,
+            Transform::IDENTITY,
+        );
+        commands.entity(visual).insert(ChildOf(slot_entity));
+    }
+}
+
+pub(crate) fn bakery_slot_positions() -> [Vec3; 9] {
     [
+        Vec3::new(-0.42, 0.12, 0.62),
+        Vec3::new(0.42, 0.12, 0.62),
         Vec3::new(-0.70, 0.12, 0.62),
         Vec3::new(0.00, 0.12, 0.62),
         Vec3::new(0.70, 0.12, 0.62),
-        Vec3::new(1.35, 0.12, 0.62),
         Vec3::new(-0.70, 0.12, -0.05),
         Vec3::new(0.00, 0.12, -0.05),
         Vec3::new(0.70, 0.12, -0.05),

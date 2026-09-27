@@ -15,7 +15,7 @@ use crate::{
     npc_placement_slots::{NpcPlacementSlot, NpcPropertyEventSlot},
     npc_production::{AppliedNpcPropertyEvents, NpcPropertyEvent},
     npc_property_upgrade::BakeryUpgrade,
-    npc_requests::{NpcRequest, NpcRequestState},
+    npc_requests::{BakerFinalOrder, NpcRequest, NpcRequestState},
     npcs::{NpcCharacter, NpcFriendship, NpcProperty},
     placement::PlayerPlacedObject,
     planet::{ResourceType, TileCoordinate},
@@ -38,6 +38,8 @@ pub struct NpcSave {
     pub character: NpcCharacter,
     pub friendship: u8,
     pub request_state: Option<NpcRequestState>,
+    #[serde(default)]
+    pub baker_final_order_state: Option<NpcRequestState>,
     pub bakery_upgrade_complete: bool,
 }
 
@@ -316,13 +318,19 @@ fn capture_save(world: &mut World) -> GameSave {
         }
     }
     {
-        let mut q = world.query::<(&NpcCharacter, &NpcFriendship, Option<&NpcRequest>)>();
+        let mut q = world.query::<(
+            &NpcCharacter,
+            &NpcFriendship,
+            Option<&NpcRequest>,
+            Option<&BakerFinalOrder>,
+        )>();
         save.npcs = q
             .iter(world)
-            .map(|(character, friendship, request)| NpcSave {
+            .map(|(character, friendship, request, final_order)| NpcSave {
                 character: *character,
                 friendship: friendship.0,
                 request_state: request.map(|request| request.state),
+                baker_final_order_state: final_order.map(|order| order.state),
                 bakery_upgrade_complete: false,
             })
             .collect();
@@ -471,12 +479,22 @@ fn apply_save(world: &mut World, save: &GameSave) {
         }
     }
     for npc in &save.npcs {
-        let mut q = world.query::<(&NpcCharacter, &mut NpcFriendship, Option<&mut NpcRequest>)>();
-        for (character, mut friendship, request) in q.iter_mut(world) {
+        let mut q = world.query::<(
+            &NpcCharacter,
+            &mut NpcFriendship,
+            Option<&mut NpcRequest>,
+            Option<&mut BakerFinalOrder>,
+        )>();
+        for (character, mut friendship, request, final_order) in q.iter_mut(world) {
             if *character == npc.character {
                 friendship.0 = npc.friendship;
                 if let (Some(state), Some(mut request)) = (npc.request_state, request) {
                     request.state = state;
+                }
+                if let (Some(state), Some(mut final_order)) =
+                    (npc.baker_final_order_state, final_order)
+                {
+                    final_order.state = state;
                 }
             }
         }
@@ -597,7 +615,17 @@ fn restore_bakery_slots(world: &mut World, saved_slots: &[PlacementSlotSave]) {
             .map(|(entity, slot, _)| (entity, slot.index))
             .collect::<Vec<_>>()
     };
-    let required_count = if upgrade_complete { 8 } else { 2 };
+    let required_count = if upgrade_complete {
+        saved_slots
+            .iter()
+            .filter(|slot| slot.property == NpcProperty::Bakery)
+            .map(|slot| slot.index + 1)
+            .max()
+            .unwrap_or(8)
+            .max(8)
+    } else {
+        2
+    };
     let obsolete = existing
         .iter()
         .filter(|(_, index)| *index >= required_count)
@@ -918,6 +946,7 @@ mod tests {
             character: NpcCharacter::Baker,
             friendship: 56,
             request_state: Some(NpcRequestState::Active),
+            baker_final_order_state: Some(NpcRequestState::Complete),
             bakery_upgrade_complete: true,
         });
         save.gathered_resources
@@ -964,7 +993,7 @@ mod tests {
         world.resource_mut::<GameClock>().restore(5, 777.25);
         world
             .resource_mut::<CraftedCeramics>()
-            .restore((1..=12).map(ceramic).collect(), 12);
+            .restore((1..=13).map(ceramic).collect(), 13);
         world.resource_mut::<RedClayDiscovery>().discovered = true;
 
         let player = crate::player_movement::SurfacePlayer::new(
@@ -1008,6 +1037,9 @@ mod tests {
                     definition: crate::npc_requests::BAKER_TWO_CUPS,
                     state: NpcRequestState::Active,
                 },
+                BakerFinalOrder {
+                    state: NpcRequestState::Complete,
+                },
             ))
             .id();
         let bakery = world
@@ -1022,7 +1054,7 @@ mod tests {
             .unwrap()
             .occupied_by = Some(ceramic(5));
         world.spawn((NpcPlacementSlot::bakery(1), ChildOf(bakery)));
-        for index in 2..8 {
+        for index in 2..9 {
             let mut slot = NpcPlacementSlot::bakery(index);
             slot.occupied_by = Some(ceramic((index + 5) as u64));
             world.spawn((slot, ChildOf(bakery)));
@@ -1092,7 +1124,7 @@ mod tests {
                 .iter(world)
                 .filter(|(_, parent)| world.get::<NpcPlacementSlot>(parent.parent()).is_some())
                 .count(),
-            7
+            8
         );
         apply_save(world, &decoded);
         let mut placed = world.query_filtered::<Entity, With<PlayerPlacedObject>>();

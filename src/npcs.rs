@@ -665,9 +665,10 @@ fn spawn_npc_world(
             ))
             .id();
         if definition.character == NpcCharacter::Baker {
-            commands
-                .entity(character)
-                .insert(crate::npc_requests::NpcRequest::baker());
+            commands.entity(character).insert((
+                crate::npc_requests::NpcRequest::baker(),
+                crate::npc_requests::BakerFinalOrder::default(),
+            ));
         }
         commands.entity(character).with_children(|children| {
             children.spawn((
