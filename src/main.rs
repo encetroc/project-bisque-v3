@@ -9,6 +9,7 @@ pub mod game_clock;
 pub mod interaction;
 pub mod inventory;
 pub mod kiln;
+pub mod npc_placement_slots;
 pub mod npc_requests;
 pub mod npcs;
 pub mod placement;

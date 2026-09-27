@@ -6,6 +6,7 @@ use crate::{
     ceramics::{CeramicForm, CeramicItem, ProcessingState},
     economy::Wallet,
     inventory::{CeramicObjectId, Inventory},
+    npc_placement_slots::NpcPlacementSlot,
     npcs::{NpcCharacter, NpcFriendship},
     workbench::CraftedCeramics,
 };
@@ -175,24 +176,52 @@ fn handle_activations(
 }
 
 fn handle_deliveries(
+    mut commands: Commands,
     mut messages: MessageReader<DeliverNpcRequest>,
     mut requests: Query<(&NpcCharacter, &mut NpcRequest, &mut NpcFriendship)>,
     mut inventory: ResMut<Inventory>,
     ceramics: Res<CraftedCeramics>,
     mut wallet: ResMut<Wallet>,
+    mut slots: Query<(Entity, &mut NpcPlacementSlot)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     for message in messages.read() {
         let Ok((character, mut request, mut friendship)) = requests.get_mut(message.npc) else {
             continue;
         };
-        if *character == request.definition.character {
-            let _ = deliver_request(
+        if *character == request.definition.character
+            && let Ok(delivered) = deliver_request(
                 &mut request,
                 &mut inventory,
                 &ceramics.items,
                 &mut friendship,
                 &mut wallet,
-            );
+            )
+        {
+            // Slot index, rather than ECS iteration order, makes the display deterministic.
+            let mut ordered_slots: Vec<_> = slots.iter_mut().collect();
+            ordered_slots.sort_by_key(|(_, slot)| slot.index);
+            for id in delivered {
+                let Some(item) = ceramics.items.iter().find(|item| item.id == id).copied() else {
+                    continue;
+                };
+                let Some((entity, slot)) = ordered_slots.iter_mut().find(|(_, slot)| {
+                    slot.occupied_by.is_none() && slot.allowed_forms.contains(&item.form())
+                }) else {
+                    continue;
+                };
+                if slot.occupy(item).is_ok() {
+                    let visual = crate::ceramic_visuals::spawn_ceramic_visual(
+                        &mut commands,
+                        &mut meshes,
+                        &mut materials,
+                        item,
+                        Transform::IDENTITY,
+                    );
+                    commands.entity(visual).insert(ChildOf(*entity));
+                }
+            }
         }
     }
 }
@@ -358,5 +387,95 @@ mod tests {
             .is_ok()
         );
         assert_eq!(friendship, NpcFriendship(12));
+    }
+
+    #[test]
+    fn delivery_populates_deterministic_bakery_slots_once_with_persistent_cup_visuals() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(AssetPlugin::default())
+            .init_asset::<Mesh>()
+            .init_asset::<StandardMaterial>()
+            .add_plugins(NpcRequestPlugin);
+
+        let baker = app
+            .world_mut()
+            .spawn((
+                NpcCharacter::Baker,
+                NpcRequest::baker(),
+                NpcFriendship::default(),
+            ))
+            .id();
+        let first_slot = app
+            .world_mut()
+            .spawn((
+                NpcPlacementSlot::bakery(0),
+                Transform::from_xyz(-0.4, 0.1, 0.6),
+            ))
+            .id();
+        let second_slot = app
+            .world_mut()
+            .spawn((
+                NpcPlacementSlot::bakery(1),
+                Transform::from_xyz(0.4, 0.1, 0.6),
+            ))
+            .id();
+        let items = vec![
+            ceramic(11, CeramicForm::Cup, ProcessingState::Fired),
+            ceramic(12, CeramicForm::Cup, ProcessingState::Fired),
+        ];
+        {
+            let mut inventory = app.world_mut().resource_mut::<Inventory>();
+            inventory.add_ceramic(items[0].id);
+            inventory.add_ceramic(items[1].id);
+        }
+        app.world_mut().resource_mut::<CraftedCeramics>().items = items.clone();
+        app.world_mut()
+            .write_message(ActivateNpcRequest { npc: baker });
+        app.update();
+        app.world_mut()
+            .write_message(DeliverNpcRequest { npc: baker });
+        app.update();
+
+        let request = app.world().get::<NpcRequest>(baker).unwrap();
+        assert_eq!(request.state, NpcRequestState::Complete);
+        assert_eq!(
+            app.world()
+                .get::<NpcPlacementSlot>(first_slot)
+                .unwrap()
+                .occupied_by,
+            Some(items[0])
+        );
+        assert_eq!(
+            app.world()
+                .get::<NpcPlacementSlot>(second_slot)
+                .unwrap()
+                .occupied_by,
+            Some(items[1])
+        );
+        let mut visuals = app
+            .world_mut()
+            .query::<(&crate::ceramic_visuals::CeramicVisual, &ChildOf)>();
+        let placed: Vec<_> = visuals
+            .iter(app.world())
+            .filter(|(visual, _)| items.contains(&visual.0))
+            .map(|(visual, parent)| (visual.0, parent.parent()))
+            .collect();
+        assert_eq!(placed.len(), 2);
+        assert_eq!(placed[0].1, first_slot);
+        assert_eq!(placed[1].1, second_slot);
+
+        app.world_mut()
+            .write_message(DeliverNpcRequest { npc: baker });
+        app.update();
+        assert_eq!(
+            app.world_mut()
+                .query::<&crate::ceramic_visuals::CeramicVisual>()
+                .iter(app.world())
+                .filter(|visual| items.contains(&visual.0))
+                .count(),
+            2
+        );
+        assert!(app.world().entities().contains(placed[0].1));
     }
 }

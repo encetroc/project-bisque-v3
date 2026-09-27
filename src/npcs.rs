@@ -728,6 +728,16 @@ fn spawn_npc_world(
                 MeshMaterial3d(roof_material),
                 Transform::from_xyz(0.0, 1.92, -0.02).with_rotation(Quat::from_rotation_z(0.12)),
             ));
+            if definition.property == NpcProperty::Bakery {
+                // Two deterministic counter positions: one cup per slot, no production clutter.
+                for (index, x) in [-0.42, 0.42].into_iter().enumerate() {
+                    children.spawn((
+                        Name::new(format!("Bakery ceramic slot {index}")),
+                        crate::npc_placement_slots::NpcPlacementSlot::bakery(index),
+                        Transform::from_xyz(x, 0.12, 0.62),
+                    ));
+                }
+            }
         });
 
         if definition.character == NpcCharacter::Merchant {
