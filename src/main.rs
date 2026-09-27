@@ -10,6 +10,7 @@ pub mod planet_surface;
 pub mod player_movement;
 pub mod resource_nodes;
 pub mod surface_transform;
+pub mod workbench;
 
 fn main() {
     App::new()
@@ -18,6 +19,7 @@ fn main() {
         .add_plugins(planet_surface::PlanetSurfacePlugin)
         .add_plugins(resource_nodes::ResourceNodePlugin)
         .add_plugins(interaction::InteractionPlugin)
+        .add_plugins(workbench::WorkbenchPlugin)
         .add_plugins(player_movement::PlayerMovementPlugin)
         .add_plugins(camera_follow::SurfaceCameraFollowPlugin)
         .run();
