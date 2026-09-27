@@ -2,7 +2,10 @@
 
 use bevy::prelude::*;
 
-use crate::ceramics::{CeramicForm, CeramicItem};
+use crate::{
+    ceramics::{CeramicForm, CeramicItem},
+    npc_production::NpcPropertyEvent,
+};
 
 /// A single property display position with explicit category eligibility and capacity.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,9 +37,43 @@ impl NpcPlacementSlot {
     }
 }
 
+/// A single authored location for explicit NPC-created world consequences.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NpcPropertyEventSlot {
+    pub index: usize,
+    pub allowed_events: [Option<NpcPropertyEvent>; 1],
+    pub occupied_by: Option<NpcPropertyEvent>,
+}
+
+impl NpcPropertyEventSlot {
+    pub const fn workshop(index: usize) -> Self {
+        Self {
+            index,
+            allowed_events: [Some(NpcPropertyEvent::CarpenterAddsBench)],
+            occupied_by: None,
+        }
+    }
+
+    pub fn can_accept(&self, event: NpcPropertyEvent) -> bool {
+        self.occupied_by.is_none() && self.allowed_events.contains(&Some(event))
+    }
+
+    pub fn occupy(&mut self, event: NpcPropertyEvent) -> Result<(), SlotError> {
+        if !self.allowed_events.contains(&Some(event)) {
+            return Err(SlotError::IneligibleEvent);
+        }
+        if self.occupied_by.is_some() {
+            return Err(SlotError::Occupied);
+        }
+        self.occupied_by = Some(event);
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotError {
     IneligibleForm,
+    IneligibleEvent,
     Occupied,
 }
 

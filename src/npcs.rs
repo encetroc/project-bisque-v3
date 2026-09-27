@@ -739,6 +739,13 @@ fn spawn_npc_world(
                         Transform::from_xyz(x, 0.12, 0.62),
                     ));
                 }
+            } else if definition.property == NpcProperty::Workshop {
+                // The only physical NPC production consequence has one authored placement slot.
+                children.spawn((
+                    Name::new("Carpenter world-event slot 0"),
+                    crate::npc_placement_slots::NpcPropertyEventSlot::workshop(0),
+                    Transform::from_xyz(0.0, 0.0, -1.25),
+                ));
             }
         });
 
