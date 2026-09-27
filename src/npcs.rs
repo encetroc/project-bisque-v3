@@ -692,15 +692,17 @@ fn spawn_npc_world(
         });
 
         let property_transform = location_transform(definition.property_tile);
-        let property = commands
-            .spawn((
-                Name::new(definition.property_name),
-                definition.property,
-                property_transform,
-                Interactable::new(format!("Visit the {}", definition.property_name)),
-                Visibility::default(),
-            ))
-            .id();
+        let mut property_bundle = commands.spawn((
+            Name::new(definition.property_name),
+            definition.property,
+            property_transform,
+            Interactable::new(format!("Visit the {}", definition.property_name)),
+            Visibility::default(),
+        ));
+        if definition.property == NpcProperty::Bakery {
+            property_bundle.insert(crate::npc_property_upgrade::BakeryUpgrade::default());
+        }
+        let property = property_bundle.id();
         commands.entity(property).with_children(|children| {
             let (wall_material, roof_material) = match definition.property {
                 NpcProperty::Bakery => (pale.clone(), roof.clone()),

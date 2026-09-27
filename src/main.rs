@@ -10,6 +10,7 @@ pub mod interaction;
 pub mod inventory;
 pub mod kiln;
 pub mod npc_placement_slots;
+pub mod npc_property_upgrade;
 pub mod npc_requests;
 pub mod npcs;
 pub mod placement;
@@ -36,6 +37,7 @@ fn main() {
         .add_plugins(studio::StudioPlugin)
         .add_plugins(npcs::NpcPlugin)
         .add_plugins(npc_requests::NpcRequestPlugin)
+        .add_plugins(npc_property_upgrade::NpcPropertyUpgradePlugin)
         .add_plugins(placement::PlacementPlugin)
         .add_plugins(player_movement::PlayerMovementPlugin)
         .add_plugins(camera_follow::SurfaceCameraFollowPlugin)
