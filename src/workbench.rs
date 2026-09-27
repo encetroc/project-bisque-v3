@@ -4,8 +4,10 @@ use bevy::prelude::*;
 
 use crate::{
     ceramics::{CeramicForm, CeramicItem, ClayMaterial, Glaze, recipe_for},
-    interaction::InteractionRequested,
+    interaction::{Interactable, InteractionRequested},
     inventory::{CeramicObjectId, Inventory},
+    planet::{DEFAULT_PLANET_RADIUS, PlanetFace, PlanetTile, TileCoordinate, sample_tile_surface},
+    surface_transform::{SurfaceLocation, surface_transform},
 };
 
 /// Marks an entity as a level-one shaping workbench.
@@ -97,13 +99,73 @@ pub fn craft_greenware(
 
 pub struct WorkbenchPlugin;
 
+fn spawn_workbench(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let tile = PlanetTile::new(
+        TileCoordinate::new(PlanetFace::PositiveY, 11, 14)
+            .expect("workbench starts beside the test player's starting tile"),
+    );
+    let surface = sample_tile_surface(&tile, DEFAULT_PLANET_RADIUS)
+        .expect("the configured planet radius is valid");
+    let mut transform = surface_transform(
+        SurfaceLocation::new(surface.normal, 0.1),
+        Vec3::ZERO,
+        DEFAULT_PLANET_RADIUS,
+        &surface,
+        Vec3::X,
+    )
+    .expect("the workbench's tangent orientation is valid");
+    transform.translation -= transform.rotation * Vec3::X * 2.5;
+
+    let workbench = commands
+        .spawn((
+            Name::new("Ceramics workbench"),
+            Workbench,
+            Interactable::new("Use workbench"),
+            transform,
+            Visibility::default(),
+        ))
+        .id();
+    let wood = materials.add(Color::srgb(0.42, 0.25, 0.13));
+    let clay = materials.add(Color::srgb(0.72, 0.38, 0.23));
+    let tabletop = meshes.add(Cuboid::new(1.8, 0.18, 1.1));
+    let leg = meshes.add(Cuboid::new(0.14, 0.9, 0.14));
+    let pottery_wheel = meshes.add(Cylinder::new(0.38, 0.12));
+    commands.entity(workbench).with_children(|children| {
+        children.spawn((
+            Name::new("Workbench top"),
+            Mesh3d(tabletop),
+            MeshMaterial3d(wood.clone()),
+            Transform::from_xyz(0.0, 0.48, 0.0),
+        ));
+        for x in [-0.72, 0.72] {
+            for z in [-0.38, 0.38] {
+                children.spawn((
+                    Mesh3d(leg.clone()),
+                    MeshMaterial3d(wood.clone()),
+                    Transform::from_xyz(x, 0.02, z),
+                ));
+            }
+        }
+        children.spawn((
+            Name::new("Workbench clay sample"),
+            Mesh3d(pottery_wheel),
+            MeshMaterial3d(clay),
+            Transform::from_xyz(0.0, 0.64, 0.0),
+        ));
+    });
+}
+
 impl Plugin for WorkbenchPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Inventory>()
             .init_resource::<WorkbenchSelection>()
             .init_resource::<CraftedCeramics>()
             .init_resource::<WorkbenchFeedback>()
-            .add_systems(Startup, spawn_workbench_help)
+            .add_systems(Startup, (spawn_workbench, spawn_workbench_help))
             .add_systems(
                 Update,
                 (
@@ -229,6 +291,26 @@ mod tests {
 
     fn stock(inventory: &mut Inventory, clay: ClayMaterial, quantity: u32) {
         assert_eq!(inventory.add_resource(clay.resource(), quantity), 0);
+    }
+
+    #[test]
+    fn headless_startup_spawns_an_interactable_surface_aligned_workbench() {
+        let mut app = App::new();
+        app.insert_resource(Assets::<Mesh>::default());
+        app.insert_resource(Assets::<StandardMaterial>::default());
+        app.add_systems(Startup, spawn_workbench);
+        app.update();
+
+        let mut query = app
+            .world_mut()
+            .query::<(&Workbench, &Interactable, &Transform)>();
+        let (_, interactable, transform) = query.single(app.world()).unwrap();
+        let up = transform.rotation * Vec3::Y;
+        let tile = PlanetTile::new(TileCoordinate::new(PlanetFace::PositiveY, 11, 14).unwrap());
+        let surface = sample_tile_surface(&tile, DEFAULT_PLANET_RADIUS).unwrap();
+        assert_eq!(interactable.prompt, "Use workbench");
+        assert!(transform.translation.is_finite());
+        assert!(up.dot(surface.normal) > 0.999);
     }
 
     #[test]
