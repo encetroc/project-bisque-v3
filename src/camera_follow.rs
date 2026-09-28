@@ -27,6 +27,15 @@ pub struct CameraObstructionFade {
     pub radius: f32,
 }
 
+/// Build a translucent material for geometry that should fade between camera and player.
+pub fn obstruction_fade_material(color: Color) -> StandardMaterial {
+    StandardMaterial {
+        base_color: color.with_alpha(0.3),
+        alpha_mode: AlphaMode::Blend,
+        ..default()
+    }
+}
+
 #[derive(Component)]
 struct CameraTarget {
     pivot: Entity,

@@ -132,7 +132,9 @@ fn handle_upgrade_requests(
         }
 
         let wall = materials.add(Color::srgb(0.89, 0.70, 0.43));
-        let roof = materials.add(Color::srgb(0.70, 0.27, 0.17));
+        let roof_color = Color::srgb(0.70, 0.27, 0.17);
+        let roof = materials.add(roof_color);
+        let faded_roof = materials.add(crate::camera_follow::obstruction_fade_material(roof_color));
         commands.entity(message.property).with_children(|children| {
             children.spawn((
                 Name::new("Bakery expanded side room"),
@@ -145,7 +147,12 @@ fn handle_upgrade_requests(
                 Name::new("Bakery expanded roof"),
                 BakeryExpansion,
                 Mesh3d(meshes.add(Cuboid::new(2.9, 0.18, 2.5))),
-                MeshMaterial3d(roof),
+                MeshMaterial3d(roof.clone()),
+                crate::camera_follow::CameraObstructionFade {
+                    opaque_material: roof,
+                    faded_material: faded_roof,
+                    radius: 2.7,
+                },
                 Transform::from_xyz(0.72, 1.98, -0.02),
             ));
         });
@@ -183,7 +190,9 @@ pub(crate) fn apply_final_bakery_upgrade(
     items: &[CeramicItem],
 ) {
     let wall = materials.add(Color::srgb(0.89, 0.70, 0.43));
-    let roof = materials.add(Color::srgb(0.70, 0.27, 0.17));
+    let roof_color = Color::srgb(0.70, 0.27, 0.17);
+    let roof = materials.add(roof_color);
+    let faded_roof = materials.add(crate::camera_follow::obstruction_fade_material(roof_color));
     commands.entity(property).with_children(|children| {
         children.spawn((
             Name::new("Bakery expanded side room"),
@@ -196,7 +205,12 @@ pub(crate) fn apply_final_bakery_upgrade(
             Name::new("Bakery expanded roof"),
             BakeryExpansion,
             Mesh3d(meshes.add(Cuboid::new(2.9, 0.18, 2.5))),
-            MeshMaterial3d(roof),
+            MeshMaterial3d(roof.clone()),
+            crate::camera_follow::CameraObstructionFade {
+                opaque_material: roof,
+                faded_material: faded_roof,
+                radius: 2.7,
+            },
             Transform::from_xyz(0.72, 1.98, -0.02),
         ));
     });

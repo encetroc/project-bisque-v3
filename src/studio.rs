@@ -305,7 +305,9 @@ fn spawn_studio(
     .expect("the studio's tangent orientation is valid");
 
     let timber = materials.add(Color::srgb(0.38, 0.23, 0.13));
-    let roof = materials.add(Color::srgb(0.66, 0.31, 0.19));
+    let roof_color = Color::srgb(0.66, 0.31, 0.19);
+    let roof = materials.add(roof_color);
+    let faded_roof = materials.add(crate::camera_follow::obstruction_fade_material(roof_color));
     let stone = materials.add(Color::srgb(0.48, 0.47, 0.40));
     let marker = materials.add(Color::srgba(0.92, 0.76, 0.22, 0.7));
     let storage = materials.add(Color::srgb(0.30, 0.43, 0.29));
@@ -339,7 +341,12 @@ fn spawn_studio(
         children.spawn((
             Name::new("Shed roof"),
             Mesh3d(meshes.add(Cuboid::new(12.4, 0.28, 5.4))),
-            MeshMaterial3d(roof),
+            MeshMaterial3d(roof.clone()),
+            crate::camera_follow::CameraObstructionFade {
+                opaque_material: roof,
+                faded_material: faded_roof,
+                radius: 6.8,
+            },
             Transform::from_xyz(0.0, 3.0, 0.0),
         ));
         children.spawn((

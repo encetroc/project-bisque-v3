@@ -486,10 +486,14 @@ fn spawn_dialogue_ui(mut commands: Commands) {
         Text::new(""),
         Node {
             position_type: PositionType::Absolute,
-            bottom: px(48),
+            bottom: px(176),
             left: px(16),
+            max_width: px(560),
+            padding: UiRect::axes(px(12), px(8)),
             ..default()
         },
+        TextColor(Color::WHITE),
+        BackgroundColor(Color::srgba(0.04, 0.06, 0.08, 0.88)),
     ));
 }
 
@@ -641,7 +645,9 @@ fn spawn_npc_world(
     let toolbox_mesh = meshes.add(Cuboid::new(0.55, 0.48, 0.5));
     let merchant_hat_mesh = meshes.add(Sphere::new(0.19));
     let wood = materials.add(Color::srgb(0.48, 0.30, 0.16));
-    let roof = materials.add(Color::srgb(0.69, 0.30, 0.18));
+    let roof_color = Color::srgb(0.69, 0.30, 0.18);
+    let roof = materials.add(roof_color);
+    let faded_roof = materials.add(crate::camera_follow::obstruction_fade_material(roof_color));
     let pale = materials.add(Color::srgb(0.86, 0.75, 0.54));
     let blue = materials.add(Color::srgb(0.24, 0.42, 0.60));
 
@@ -743,7 +749,12 @@ fn spawn_npc_world(
             children.spawn((
                 Name::new(format!("{} roof", definition.property_name)),
                 Mesh3d(meshes.add(Cuboid::new(2.55, 0.18, 2.35))),
-                MeshMaterial3d(roof_material),
+                MeshMaterial3d(roof_material.clone()),
+                crate::camera_follow::CameraObstructionFade {
+                    opaque_material: roof_material,
+                    faded_material: faded_roof.clone(),
+                    radius: 2.5,
+                },
                 Transform::from_xyz(0.0, 1.92, -0.02).with_rotation(Quat::from_rotation_z(0.12)),
             ));
             if definition.property == NpcProperty::Bakery {
