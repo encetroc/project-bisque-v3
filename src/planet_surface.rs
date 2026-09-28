@@ -132,21 +132,11 @@ struct PlanetBiomeColor(Color);
 pub struct PlanetFaceTiles(pub Vec<PlanetTile>);
 
 /// Current visibility of the three planet geometry diagnostics.
-#[derive(Resource, Debug, Clone, Copy)]
+#[derive(Resource, Debug, Clone, Copy, Default)]
 pub struct PlanetDebugMode {
     pub face_colors: bool,
     pub tile_boundaries: bool,
     pub surface_normals: bool,
-}
-
-impl Default for PlanetDebugMode {
-    fn default() -> Self {
-        Self {
-            face_colors: false,
-            tile_boundaries: false,
-            surface_normals: false,
-        }
-    }
 }
 
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
