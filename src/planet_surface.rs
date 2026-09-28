@@ -170,6 +170,8 @@ fn spawn_planet_surface(
             .spawn((
                 Name::new(format!("Planet face {face:?}")),
                 PlanetFaceTiles(tiles),
+                Transform::IDENTITY,
+                Visibility::default(),
             ))
             .id();
         for (group, (biome_color, mesh)) in generated.into_biome_meshes().into_iter().enumerate() {

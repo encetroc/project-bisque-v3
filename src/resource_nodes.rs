@@ -168,6 +168,7 @@ fn spawn_resource_nodes(
             Name::new(format!("{:?} resource node", spawn.resource_type)),
             node,
             transform,
+            Visibility::default(),
         ));
         entity.insert(Interactable::new(gather_prompt(spawn.resource_type)));
 

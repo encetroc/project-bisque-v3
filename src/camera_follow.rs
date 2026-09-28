@@ -52,7 +52,9 @@ impl Plugin for SurfaceCameraFollowPlugin {
 }
 
 fn spawn_camera_rig(mut commands: Commands) {
-    let pivot = commands.spawn((CameraPivot, Transform::IDENTITY)).id();
+    let pivot = commands
+        .spawn((CameraPivot, Transform::IDENTITY, Visibility::default()))
+        .id();
     let target = commands
         .spawn((
             Name::new("Surface camera target"),
@@ -62,6 +64,7 @@ fn spawn_camera_rig(mut commands: Commands) {
                 yaw: 0.0,
             },
             Transform::IDENTITY,
+            Visibility::default(),
         ))
         .id();
     commands.entity(pivot).insert(ChildOf(target));
@@ -90,9 +93,19 @@ fn follow_surface_player(
     placement: Option<Res<crate::placement::PlacementMode>>,
     mut wheel: MessageReader<MouseWheel>,
     players: Query<(&SurfacePlayer, &Transform)>,
-    mut targets: Query<(&mut Transform, &mut CameraTarget)>,
-    mut pivots: Query<&mut Transform, With<CameraPivot>>,
-    mut cameras: Query<&mut Transform, (With<Camera3d>, Without<CameraPivot>)>,
+    mut targets: Query<
+        (&mut Transform, &mut CameraTarget),
+        (
+            Without<SurfacePlayer>,
+            Without<CameraPivot>,
+            Without<Camera3d>,
+        ),
+    >,
+    mut pivots: Query<&mut Transform, (With<CameraPivot>, Without<SurfacePlayer>)>,
+    mut cameras: Query<
+        &mut Transform,
+        (With<Camera3d>, Without<CameraPivot>, Without<SurfacePlayer>),
+    >,
 ) {
     let Ok((_player, player_transform)) = players.single() else {
         return;
