@@ -13,4 +13,6 @@ Run the complete spec path from first clay gathering through fired sale, Baker r
 - Record tester reactions against the five success criteria and four failure signals.
 
 ## Tests
-- Fresh-save end-to-end manual test; save/reload during multi-day progression; run applicable automated tests.
+- `cargo test headless_acceptance_path_completes_the_final_order -- --nocapture` runs a headless acceptance-path test through gather/craft, tracked-cup stage transitions and sale, Baker request delivery, Highlands discovery, kiln/workbench upgrades, final-order delivery, and objective completion using production transaction APIs and the objective system. It does not simulate the real-time machine timers or rendered interaction loop.
+- `cargo test` runs the full automated suite.
+- Human follow-up is still required for the fresh-save 30–60 minute playthrough, save/reload through multi-day progression, spherical seam/pole controls and readability, physical bakery presentation/clutter, and recording reactions against the five success criteria/four failure signals. No manual tester feedback is claimed.
