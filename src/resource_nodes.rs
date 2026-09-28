@@ -5,6 +5,7 @@ use bevy::prelude::*;
 use crate::camera_follow::CameraObstructionFade;
 use crate::surface_transform::{SurfaceLocation, surface_transform};
 use crate::{
+    game_clock::DayTransition,
     interaction::{Interactable, InteractionRequested},
     inventory::Inventory,
     planet::{
@@ -40,6 +41,10 @@ pub struct RedClayDiscovery {
 }
 
 #[derive(Component, Debug, Clone, Copy)]
+pub struct GatheredResourceNode;
+
+/// Persistent red-clay progression marker retained for save compatibility.
+#[derive(Component, Debug, Clone, Copy)]
 pub struct GatheredRedClay;
 
 /// Install deterministic resource-node placement and primitive visuals.
@@ -50,8 +55,12 @@ impl Plugin for ResourceNodePlugin {
         app.init_resource::<RedClayDiscovery>()
             .init_resource::<Inventory>()
             .add_message::<InteractionRequested>()
+            .add_message::<DayTransition>()
             .add_systems(Startup, spawn_resource_nodes)
-            .add_systems(Update, gather_red_clay);
+            .add_systems(
+                Update,
+                (gather_resource_nodes, respawn_resource_nodes).chain(),
+            );
     }
 }
 
@@ -160,17 +169,16 @@ fn spawn_resource_nodes(
             node,
             transform,
         ));
-        if spawn.biome == Biome::RedHighlands && spawn.resource_type == ResourceType::RedClay {
-            entity.insert(Interactable::new("Gather red clay"));
-        }
+        entity.insert(Interactable::new(gather_prompt(spawn.resource_type)));
+
         entity.with_children(|children| visuals.spawn(children, spawn.resource_type));
     }
 }
 
-fn gather_red_clay(
+fn gather_resource_nodes(
     mut commands: Commands,
     mut requests: MessageReader<InteractionRequested>,
-    nodes: Query<&ResourceNode, Without<GatheredRedClay>>,
+    nodes: Query<&ResourceNode, Without<GatheredResourceNode>>,
     mut inventory: ResMut<Inventory>,
     mut discovery: ResMut<RedClayDiscovery>,
 ) {
@@ -178,17 +186,51 @@ fn gather_red_clay(
         let Ok(node) = nodes.get(request.target) else {
             continue;
         };
-        if node.biome != Biome::RedHighlands || node.resource_type != ResourceType::RedClay {
+        // Each authored node yields one unit of its specified resource. Leave it
+        // available if the inventory cannot accept the complete yield.
+        if inventory.add_resource(node.resource_type, 1) != 0 {
             continue;
         }
-        if inventory.add_resource(ResourceType::RedClay, 1) != 0 {
-            continue;
+        if node.biome == Biome::RedHighlands && node.resource_type == ResourceType::RedClay {
+            discovery.discovered = true;
+            commands.entity(request.target).insert(GatheredRedClay);
         }
-        discovery.discovered = true;
         commands
             .entity(request.target)
-            .insert(GatheredRedClay)
+            .insert((GatheredResourceNode, Visibility::Hidden))
             .remove::<Interactable>();
+    }
+}
+
+fn respawn_resource_nodes(
+    mut commands: Commands,
+    mut transitions: MessageReader<DayTransition>,
+    gathered: Query<(Entity, &ResourceNode), With<GatheredResourceNode>>,
+) {
+    if transitions.read().next().is_none() {
+        return;
+    }
+    for (entity, node) in &gathered {
+        commands
+            .entity(entity)
+            .remove::<(GatheredResourceNode, GatheredRedClay)>()
+            .insert((
+                Visibility::Inherited,
+                Interactable::new(gather_prompt(node.resource_type)),
+            ));
+    }
+}
+
+pub(crate) fn gather_prompt(resource_type: ResourceType) -> &'static str {
+    match resource_type {
+        ResourceType::CommonClay => "Gather common clay",
+        ResourceType::RedClay => "Gather red clay",
+        ResourceType::PaleClay => "Gather pale clay",
+        ResourceType::Wood => "Gather wood",
+        ResourceType::IronMineral => "Gather iron",
+        ResourceType::Plant => "Gather plants",
+        ResourceType::Shell => "Gather shells",
+        ResourceType::Sand => "Gather sand",
     }
 }
 
@@ -376,6 +418,7 @@ impl ResourceNodeVisuals {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inventory::InventorySlot;
     use std::collections::HashSet;
 
     #[test]
@@ -444,12 +487,12 @@ mod tests {
     }
 
     #[test]
-    fn red_clay_gathering_is_highlands_only_and_discovery_persists_after_collection() {
+    fn red_clay_discovery_is_highlands_only_while_other_nodes_can_be_gathered() {
         let mut app = App::new();
         app.add_message::<InteractionRequested>()
             .init_resource::<Inventory>()
             .init_resource::<RedClayDiscovery>()
-            .add_systems(Update, gather_red_clay);
+            .add_systems(Update, gather_resource_nodes);
         let highlands = app
             .world_mut()
             .spawn(ResourceNode {
@@ -476,7 +519,7 @@ mod tests {
             app.world()
                 .resource::<Inventory>()
                 .resource_count(ResourceType::RedClay),
-            0
+            1
         );
 
         app.world_mut()
@@ -487,9 +530,15 @@ mod tests {
             app.world()
                 .resource::<Inventory>()
                 .resource_count(ResourceType::RedClay),
-            1
+            2
         );
+        assert!(app.world().get::<GatheredResourceNode>(highlands).is_some());
         assert!(app.world().get::<GatheredRedClay>(highlands).is_some());
+        assert_eq!(
+            app.world().get::<Visibility>(highlands),
+            Some(&Visibility::Hidden)
+        );
+        assert!(app.world().get::<Interactable>(highlands).is_none());
         assert!(app.world().get::<ResourceNode>(highlands).is_some());
 
         app.world_mut()
@@ -499,9 +548,105 @@ mod tests {
             app.world()
                 .resource::<Inventory>()
                 .resource_count(ResourceType::RedClay),
-            1,
-            "a previously gathered node cannot be collected again after returning"
+            2,
+            "a previously gathered node cannot be collected again before respawning"
         );
+    }
+
+    #[test]
+    fn gathering_any_node_hides_it_and_only_a_day_transition_respawns_it() {
+        let mut app = App::new();
+        app.add_message::<InteractionRequested>()
+            .add_message::<DayTransition>()
+            .init_resource::<Inventory>()
+            .init_resource::<RedClayDiscovery>()
+            .add_systems(
+                Update,
+                (gather_resource_nodes, respawn_resource_nodes).chain(),
+            );
+        let node = app
+            .world_mut()
+            .spawn((
+                ResourceNode {
+                    coordinate: TileCoordinate::new(PlanetFace::PositiveX, 2, 2).unwrap(),
+                    biome: Biome::Meadow,
+                    resource_type: ResourceType::Wood,
+                },
+                Interactable::new("Gather wood"),
+                Visibility::Inherited,
+            ))
+            .id();
+
+        app.world_mut()
+            .write_message(InteractionRequested { target: node });
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<Inventory>()
+                .resource_count(ResourceType::Wood),
+            1
+        );
+        assert!(app.world().get::<GatheredResourceNode>(node).is_some());
+        assert_eq!(
+            app.world().get::<Visibility>(node),
+            Some(&Visibility::Hidden)
+        );
+        assert!(app.world().get::<Interactable>(node).is_none());
+
+        app.update();
+        assert!(app.world().get::<GatheredResourceNode>(node).is_some());
+        app.world_mut().write_message(DayTransition { day: 2 });
+        app.update();
+        assert!(app.world().get::<GatheredResourceNode>(node).is_none());
+        assert_eq!(
+            app.world().get::<Visibility>(node),
+            Some(&Visibility::Inherited)
+        );
+        assert!(app.world().get::<Interactable>(node).is_some());
+    }
+
+    #[test]
+    fn full_inventory_leaves_node_visible_and_yield_uncollected() {
+        let mut app = App::new();
+        app.add_message::<InteractionRequested>()
+            .init_resource::<Inventory>()
+            .init_resource::<RedClayDiscovery>()
+            .add_systems(Update, gather_resource_nodes);
+        let node = app
+            .world_mut()
+            .spawn((
+                ResourceNode {
+                    coordinate: TileCoordinate::new(PlanetFace::PositiveX, 3, 3).unwrap(),
+                    biome: Biome::Meadow,
+                    resource_type: ResourceType::Wood,
+                },
+                Interactable::new("Gather wood"),
+                Visibility::Inherited,
+            ))
+            .id();
+        let slots = std::array::from_fn(|index| {
+            InventorySlot::Ceramic(crate::inventory::CeramicObjectId(index as u64))
+        });
+        app.world_mut()
+            .resource_mut::<Inventory>()
+            .restore_slots(slots);
+
+        app.world_mut()
+            .write_message(InteractionRequested { target: node });
+        app.update();
+
+        assert_eq!(
+            app.world()
+                .resource::<Inventory>()
+                .resource_count(ResourceType::Wood),
+            0
+        );
+        assert!(app.world().get::<GatheredResourceNode>(node).is_none());
+        assert_eq!(
+            app.world().get::<Visibility>(node),
+            Some(&Visibility::Inherited)
+        );
+        assert!(app.world().get::<Interactable>(node).is_some());
     }
 
     #[test]

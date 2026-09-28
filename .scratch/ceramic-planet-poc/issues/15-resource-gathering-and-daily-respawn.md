@@ -1,6 +1,6 @@
 # 15 — Gather resource nodes and respawn daily
 
-Status: ready-for-agent
+Status: resolved
 Blocked by: 13, 14, 16, 17
 
 ## Scope
@@ -13,3 +13,8 @@ Connect resource node interaction to inventory; gathered nodes disappear and ret
 
 ## Tests
 - Integration test gather → node absent → next-day respawn; test full-inventory behavior.
+
+## Answer
+Implemented generic resource gathering, hiding gathered nodes until a `DayTransition`, and retaining nodes when inventory cannot accept the yield. Every node grants one unit of its authored resource. Added headless tests for gathering/respawn and full inventory; save/load also persists gathered-node state.
+
+Verified with `cargo test resource_nodes::tests` and `cargo test save_game::tests`.

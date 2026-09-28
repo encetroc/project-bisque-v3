@@ -21,7 +21,9 @@ use crate::{
     placement::PlayerPlacedObject,
     planet::{ResourceType, TileCoordinate},
     player_movement::SurfacePlayer,
-    resource_nodes::{GatheredRedClay, RedClayDiscovery, ResourceNode},
+    resource_nodes::{
+        GatheredRedClay, GatheredResourceNode, RedClayDiscovery, ResourceNode, gather_prompt,
+    },
     workbench::{CraftedCeramics, Workbench},
 };
 
@@ -359,10 +361,16 @@ fn capture_save(world: &mut World) -> GameSave {
         }
     }
     {
-        let mut q = world.query::<(&ResourceNode, Option<&GatheredRedClay>)>();
+        let mut q = world.query::<(
+            &ResourceNode,
+            Option<&GatheredResourceNode>,
+            Option<&GatheredRedClay>,
+        )>();
         save.gathered_resources = q
             .iter(world)
-            .filter_map(|(node, gathered)| gathered.map(|_| node.coordinate))
+            .filter_map(|(node, gathered, legacy)| {
+                (gathered.is_some() || legacy.is_some()).then_some(node.coordinate)
+            })
             .collect();
     }
     {
@@ -529,33 +537,46 @@ fn apply_save(world: &mut World, save: &GameSave) {
     {
         let gathered: HashSet<_> = save.gathered_resources.iter().copied().collect();
         let nodes = {
-            let mut q = world.query::<(Entity, &ResourceNode, Option<&GatheredRedClay>)>();
+            let mut q = world.query::<(
+                Entity,
+                &ResourceNode,
+                Option<&GatheredResourceNode>,
+                Option<&GatheredRedClay>,
+            )>();
             q.iter(world)
-                .map(|(entity, node, marker)| {
+                .map(|(entity, node, marker, red_clay_marker)| {
                     (
                         entity,
                         node.coordinate,
+                        node.resource_type,
                         node.biome == crate::planet::Biome::RedHighlands
                             && node.resource_type == ResourceType::RedClay,
                         marker.is_some(),
+                        red_clay_marker.is_some(),
                     )
                 })
                 .collect::<Vec<_>>()
         };
-        for (entity, coordinate, red_clay, was_gathered) in nodes {
+        for (entity, coordinate, resource_type, red_clay, was_gathered, was_red_clay) in nodes {
             let should_gather = gathered.contains(&coordinate);
             if should_gather && !was_gathered {
-                world
-                    .entity_mut(entity)
-                    .insert(GatheredRedClay)
+                let mut entity = world.entity_mut(entity);
+                entity
+                    .insert((GatheredResourceNode, Visibility::Hidden))
                     .remove::<crate::interaction::Interactable>();
-            } else if !should_gather && was_gathered {
-                world.entity_mut(entity).remove::<GatheredRedClay>();
                 if red_clay {
-                    world
-                        .entity_mut(entity)
-                        .insert(crate::interaction::Interactable::new("Gather red clay"));
+                    entity.insert(GatheredRedClay);
                 }
+            } else if !should_gather && was_gathered {
+                let mut entity = world.entity_mut(entity);
+                entity
+                    .remove::<(GatheredResourceNode, GatheredRedClay)>()
+                    .insert((
+                        Visibility::Inherited,
+                        crate::interaction::Interactable::new(gather_prompt(resource_type)),
+                    ));
+            } else if should_gather && red_clay && !was_red_clay {
+                world.entity_mut(entity).insert(GatheredRedClay);
             }
         }
     }
